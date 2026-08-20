@@ -1,0 +1,153 @@
+:root {
+  --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
+  --fg:#e6edf3; --dim:#8b98a5; --acc:#4aa8ff; --good:#3fb950; --bad:#f85149;
+  --warn:#d29922; --batt:#a371f7;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6; --line:#d8dee4;
+          --fg:#1f2328; --dim:#59636e; }
+}
+* { box-sizing:border-box; }
+body { margin:0; font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+       background:var(--bg); color:var(--fg); }
+h1 { font-size:20px; margin:0; }
+h2 { font-size:15px; margin:0 0 12px; letter-spacing:.02em; }
+h3 { font-size:13px; margin:18px 0 8px; color:var(--dim); text-transform:uppercase;
+     letter-spacing:.06em; }
+a { color:var(--acc); }
+header { padding:16px 22px; border-bottom:1px solid var(--line); background:var(--panel);
+         display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+header .sub { color:var(--dim); font-size:13px; }
+main { display:grid; grid-template-columns:340px minmax(0,1fr); gap:20px; padding:20px;
+       align-items:start; }
+@media (max-width:1000px){ main { grid-template-columns:minmax(0,1fr); } }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+         padding:16px; margin-bottom:16px; }
+/* sticky only where there are two columns; on mobile it overlays everything */
+@media (min-width:1001px){ .side { position:sticky; top:16px; } }
+label { display:block; font-size:12px; color:var(--dim); margin:10px 0 4px; }
+select,input[type=number],input[type=text],input[type=date] {
+  width:100%; padding:7px 9px; background:var(--panel2); color:var(--fg);
+  border:1px solid var(--line); border-radius:6px; font:inherit; font-size:13px; }
+input[type=range]{ width:100%; }
+.row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+.row3 { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+button { padding:9px 14px; border-radius:7px; border:1px solid var(--line);
+         background:var(--panel2); color:var(--fg); font:inherit; cursor:pointer; }
+button.primary { background:var(--acc); border-color:var(--acc); color:#04101d; font-weight:600; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+button:hover:not(:disabled){ filter:brightness(1.12); }
+.drop { border:1.5px dashed var(--line); border-radius:9px; padding:16px; text-align:center;
+        color:var(--dim); cursor:pointer; font-size:13px; }
+.drop.ok { border-color:var(--good); color:var(--fg); border-style:solid; }
+.drop.over { border-color:var(--acc); background:var(--panel2); }
+.note { font-size:12px; color:var(--dim); margin-top:6px; }
+.warn { background:color-mix(in srgb, var(--warn) 14%, transparent);
+        border:1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+        color:var(--fg); padding:9px 11px; border-radius:7px; font-size:12.5px; margin-top:8px; }
+.err { background:color-mix(in srgb, var(--bad) 16%, transparent);
+       border:1px solid color-mix(in srgb, var(--bad) 50%, transparent);
+       padding:9px 11px; border-radius:7px; font-size:13px; margin-top:8px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+.card { background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:12px 14px; }
+.card .k { font-size:11.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.05em; }
+.card .v { font-size:22px; font-weight:650; margin-top:3px; font-variant-numeric:tabular-nums; }
+.card .d { font-size:12px; color:var(--dim); margin-top:2px; }
+.pos { color:var(--good); } .neg { color:var(--bad); }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th,td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line);
+        font-variant-numeric:tabular-nums; }
+th:first-child,td:first-child { text-align:left; }
+th { color:var(--dim); font-weight:600; font-size:11.5px; text-transform:uppercase;
+     letter-spacing:.04em; }
+tr.best td { background:color-mix(in srgb, var(--good) 12%, transparent); font-weight:600; }
+tr.cur td { background:color-mix(in srgb, var(--acc) 14%, transparent); font-weight:600; }
+.scroll { overflow-x:auto; }
+.spinner { display:inline-block; width:13px; height:13px; border:2px solid var(--line);
+           border-top-color:var(--acc); border-radius:50%; animation:spin .7s linear infinite;
+           vertical-align:-2px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+.hide { display:none !important; }
+
+/* flow diagram */
+.flow-wrap { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); gap:18px; }
+@media (max-width:900px){ .flow-wrap { grid-template-columns:minmax(0,1fr); } }
+.flow-svg { width:100%; height:auto; max-height:400px; }
+.flow-base { stroke:var(--line); }
+.flow-live { stroke-dasharray:9 7; stroke-linecap:round; opacity:0; }
+.flow-live.active { opacity:1; animation-name:dash; animation-timing-function:linear;
+                    animation-iteration-count:infinite; }
+@keyframes dash { to { stroke-dashoffset:-32; } }
+.flow-live.import { stroke:var(--acc); } .flow-live.export { stroke:var(--good); }
+.flow-live.battery { stroke:var(--batt); }
+.flow-label { font-size:12px; fill:var(--dim); font-variant-numeric:tabular-nums; }
+.flow-label.import { fill:var(--acc); } .flow-label.export { fill:var(--good); }
+.flow-label.battery { fill:var(--batt); }
+.node { fill:var(--panel2); stroke:var(--line); stroke-width:1.5; }
+.node.importing { stroke:var(--acc); } .node.exporting { stroke:var(--good); }
+.node.charging { stroke:var(--acc); } .node.discharging { stroke:var(--batt); }
+.node-label { font-size:12px; fill:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+.node-value { font-size:15px; fill:var(--fg); font-weight:650; font-variant-numeric:tabular-nums; }
+.node-sub { font-size:10.5px; fill:var(--dim); font-variant-numeric:tabular-nums; }
+.soc-track { fill:var(--panel2); stroke:var(--line); }
+.soc-fill { fill:var(--batt); }
+.slot-tbl td { padding:4px 8px; font-size:12.5px; }
+.playbar { display:flex; align-items:center; gap:10px; margin:10px 0 4px; }
+.playbar .t { font-variant-numeric:tabular-nums; font-weight:650; min-width:52px; }
+.daychart { width:100%; height:auto; }
+.legend { display:flex; gap:14px; flex-wrap:wrap; font-size:11.5px; color:var(--dim);
+          margin-top:6px; }
+.legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; }
+
+/* utility classes, so no inline style attributes are needed and CSP can forbid them */
+.mt8 { margin-top:8px; } .mt10 { margin-top:10px; } .mt12 { margin-top:12px; }
+.mt14 { margin-top:14px; } .w100 { width:100%; } .fs13 { font-size:13px; }
+.dimtd { color:var(--dim); }
+.legend i.sw-acc { background:var(--acc); }
+.legend i.sw-batt { background:var(--batt); }
+.legend i.sw-good { background:var(--good); }
+
+/* Collapsible settings. On mobile the six control panels otherwise push every result
+   off-screen; the Run buttons live OUTSIDE the <details> so they stay reachable when
+   it is shut. Desktop keeps everything open and hides the toggle (see app.js, which
+   forces `open` above the breakpoint since CSS cannot override the attribute). */
+#controls > summary {
+  display: none; cursor: pointer; list-style: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 16px; font-size: 14px; font-weight: 600;
+}
+#controls > summary::-webkit-details-marker { display: none; }
+#controls > summary::after { content: "▾  tap to change"; float: right; color: var(--dim);
+  font-weight: 400; font-size: 12px; }
+#controls[open] > summary::after { content: "▴  tap to hide"; }
+#controls > summary .sumdetail { display: block; color: var(--dim); font-weight: 400;
+  font-size: 12px; margin-top: 2px; }
+@media (max-width: 1000px) {
+  #controls > summary { display: block; }
+  /* Nothing sticky or fixed on mobile. Sticky bars overlay the content and fight the
+     collapsing URL bar, which is far worse than having to scroll to the button.
+     test/scroll.py asserts no element is sticky/fixed at these widths. */
+  #controls > summary { padding: 9px 12px; }
+}
+.actions {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 10px; margin-bottom: 16px;
+}
+.actions button { flex: 0 0 auto; min-height: 40px; padding: 9px 12px; }
+.actions #status { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+
+/* grid children must be allowed to shrink below their content width, or a wide table
+   inside them pushes the whole page sideways */
+main > *, .flow-wrap > * { min-width: 0; }
+
+/* the strapline is orientation, not something you need while using the tool; on a short
+   Android viewport it was costing 114px above the fold */
+@media (max-width: 1000px) {
+  header { padding: 10px 14px; }
+  h1 { font-size: 17px; }
+  header .sub { display: none; }
+  main { padding: 12px 14px; gap: 12px; }
+  .panel { padding: 12px; margin-bottom: 12px; }
+}

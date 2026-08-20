@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battery &amp; tariff simulator</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Battery &amp; tariff simulator</h1>
+  <span class="sub">Octopus half-hourly prices, fetched live · one charge/discharge cycle per day · all client-side</span>
+</header>
+
+<main>
+  <div class="side">
+    <details id="controls" open>
+      <summary id="controlsSummary"><span class="sumtitle">Settings</span><span class="sumdetail"></span></summary>
+    <div class="panel">
+      <h2>1 · Your data</h2>
+      <div id="dropUsage" class="drop">Drop <b>usage CSV</b> here, or click<div class="note">Octopus half-hourly electricity export</div></div>
+      <div id="usageInfo" class="note"></div>
+      <label class="mt14">Optional: gas CSV (to model a heat pump from real heating demand)</label>
+      <div id="dropGas" class="drop">Drop <b>gas CSV</b> here, or click</div>
+      <div id="gasInfo" class="note"></div>
+      <input type="file" id="fileUsage" class="hide">
+      <input type="file" id="fileGas" class="hide">
+    </div>
+
+    <div class="panel">
+      <h2>2 · Current tariff</h2>
+      <label>Where your present cost comes from</label>
+      <select id="curSource">
+        <option value="csv">The CSV's own cost columns</option>
+        <option value="manual">Enter rates manually</option>
+      </select>
+      <div id="curCsvNote" class="note"></div>
+      <div id="curManualWrap" class="hide">
+        <div class="row">
+          <div><label>Unit rate (p/kWh)</label><input type="number" id="curUnitRate" value="26.11" step="0.01"></div>
+          <div><label>Standing charge (p/day)</label><input type="number" id="curScPerDay" value="43.47" step="0.01"></div>
+        </div>
+        <div class="note">Use this if your export has no cost column, or to test a future price rise.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>3 · Tariff to compare</h2>
+      <label>DNO region</label>
+      <select id="region"></select>
+      <label>Import tariff</label>
+      <select id="importTariff"></select>
+      <div id="tariffNote" class="note"></div>
+      <label>Export tariff</label>
+      <select id="exportTariff"></select>
+      <div id="flatWrap" class="hide">
+        <label>Flat export rate (p/kWh)</label>
+        <input type="number" id="flatExport" value="12" step="0.01">
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>4 · Battery &amp; inverter</h2>
+      <div class="row3">
+        <div><label>Capacity (kWh)</label><input type="number" id="capacity" value="32" step="0.1"></div>
+        <div><label>Round-trip (%)</label><input type="number" id="roundTrip" value="90" step="1"></div>
+        <div><label>Min charge (%)</label><input type="number" id="dischargeFloor" value="10" step="1" min="0" max="95"></div>
+      </div>
+      <div class="note">Min charge is the discharge floor — the bottom slice the battery
+        never dips below (makers typically say 10%).</div>
+      <div class="row">
+        <div><label>Inverter (kW)</label><input type="number" id="inverterKw" value="10" step="0.1"></div>
+        <div><label>G100 export limit (kW)</label><input type="number" id="exportLimitKw" placeholder="none" step="0.01"></div>
+      </div>
+      <label>Cap total grid import (kW) — optional</label>
+      <input type="number" id="totalImportLimitKw" placeholder="none, 6kW limit applies to charging only" step="0.1">
+      <div class="note">Leave the import cap blank to let grid import be house load <em>plus</em> battery charge.</div>
+      <div class="row3">
+        <div><label>Battery cost (£)</label><input type="number" id="batteryCost" value="3500" step="10"></div>
+        <div><label>Inverter cost (£)</label><input type="number" id="inverterCost" placeholder="0" step="10"></div>
+        <div><label>Installation (£)</label><input type="number" id="installCost" placeholder="0" step="10"></div>
+        <div><label>Energy price rise (%/yr)</label><input type="number" id="escPct" placeholder="0, e.g. 3–5" step="0.1"></div>
+      </div>
+      <div class="note">Used for time-to-payback. Leave at 0 to hide it.</div>
+    </div>
+
+    <div class="panel">
+      <h2>5 · Strategy</h2>
+      <label>Cycle rule</label>
+      <select id="cycle">
+        <option value="contiguous" selected>Contiguous — one unbroken charge window</option>
+        <option value="scattered">Scattered — charge in any cheapest slots</option>
+      </select>
+      <label>Discharge by</label>
+      <select id="boundary">
+        <option value="cycle" selected>Next charge cycle (adaptive)</option>
+        <option value="midnight">End of day (local midnight)</option>
+        <option value="agile">End of Agile day (23:00–23:00)</option>
+      </select>
+      <div class="note">“Next charge cycle” keeps remaining charge until the battery next
+        charges, instead of dumping it at a fixed clock boundary.</div>
+      <label>Only charge at or below (p/kWh) — optional</label>
+      <input type="number" id="maxChargePrice" placeholder="no limit" step="0.1">
+      <div class="note">Set 0 to charge only when prices are negative or free.</div>
+    </div>
+
+    <div class="panel">
+      <h2>6 · Heat pump</h2>
+      <label>Source</label>
+      <select id="hpMode">
+        <option value="none">None</option>
+        <option value="synthetic">Synthetic — set annual kWh</option>
+        <option value="gas">From my gas CSV</option>
+      </select>
+      <div id="hpSynthWrap" class="hide">
+        <label>Heat pump electricity (kWh/year)</label>
+        <input type="number" id="hpKwh" value="4000" step="100">
+      </div>
+      <div id="hpCostWrap" class="hide">
+        <label>Heat pump installed cost (£)</label>
+        <input type="number" id="hpCost" placeholder="0" step="50">
+      </div>
+      <div id="hpGasWrap" class="hide">
+        <div class="row">
+          <div><label>Boiler efficiency</label><input type="number" id="boilerEff" value="0.85" step="0.01"></div>
+          <div><label>Heat pump COP</label><input type="number" id="cop" value="3.0" step="0.1"></div>
+        </div>
+        <div class="row">
+          <div><label>Gas unit rate (p/kWh)</label><input type="number" id="gasUnitRate" placeholder="for the gas bill credit" step="0.01"></div>
+          <div><label>Gas standing charge (p/day)</label><input type="number" id="gasScPerDay" placeholder="0" step="0.01"></div>
+        </div>
+        <div class="note">Gas kWh → useful heat (× efficiency) → electricity (÷ COP).</div>
+      </div>
+    </div>
+
+      <div class="panel">
+        <button id="clearCache" class="w100">Clear cached rates &amp; my usage data</button>
+        <div class="note">Your CSV is kept in this browser’s own storage so you don’t have to
+          re-upload it — it never leaves your machine.</div>
+      </div>
+    </details>
+
+    <div class="actions">
+      <button id="run" class="primary" disabled>Run</button>
+      <button id="compare" disabled>Compare all</button>
+      <div id="status" class="note"></div>
+    </div>
+  </div>
+
+  <div>
+    <div id="errBox"></div>
+    <div id="results" class="hide">
+      <div class="panel">
+        <h2 id="resultTitle">Result</h2>
+        <div class="cards" id="cards"></div>
+        <div id="warnings"></div>
+        <div id="statsNote" class="note mt12"></div>
+      </div>
+
+      <div id="sensSection" class="panel hide">
+        <h2>Sensitivity</h2>
+        <div class="note">Re-runs the optimiser at nearby pack sizes and inverter ratings,
+          everything else unchanged. ~13 runs, a few seconds each.</div>
+        <button id="runSweeps">Run sweeps</button>
+        <div id="sweepOut" class="scroll"></div>
+      </div>
+
+      <div id="comparePanel" class="panel hide">
+        <h2>All tariffs compared</h2>
+        <div class="scroll"><table id="compareTable"></table></div>
+        <div class="note">Same battery, inverter and strategy for every row. Each tariff uses its own
+          standing charge, accumulated per half-hour so mid-period changes are exact.</div>
+      </div>
+
+      <div class="panel">
+        <h2>Day explorer</h2>
+        <div class="row3">
+          <div><label>Day</label><select id="daySelect"></select></div>
+          <div><label>Time</label><select id="slotSelect"></select></div>
+          <div><label>Jump to</label><select id="dayPreset">
+            <option value="best">Biggest saving</option>
+            <option value="worst">Smallest saving</option>
+            <option value="cheap">Most negative price</option>
+            <option value="peak">Highest peak price</option>
+            <option value="mostcycled">Most battery throughput</option>
+          </select></div>
+        </div>
+        <div class="playbar">
+          <button id="play">▶ Play</button>
+          <span class="t" id="slotTime">00:00</span>
+          <input type="range" id="slotSlider" min="0" max="47" value="0">
+        </div>
+        <div class="flow-wrap">
+          <div>
+            <div id="flow"></div>
+            <div class="legend">
+              <span><i class="sw-acc"></i>grid import</span>
+              <span><i class="sw-batt"></i>battery discharge</span>
+              <span><i class="sw-good"></i>export</span>
+            </div>
+          </div>
+          <div>
+            <div class="scroll"><table class="slot-tbl" id="slotTable"></table></div>
+            <h3>Whole day</h3>
+            <svg id="dayChart" class="daychart" viewBox="0 0 480 190"></svg>
+            <div class="legend">
+              <span><i class="sw-acc"></i>import price</span>
+              <span><i class="sw-good"></i>export price</span>
+              <span><i class="sw-batt"></i>state of charge</span>
+            </div>
+          </div>
+        </div>
+        <div id="dayNote" class="note mt10"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Monthly</h2>
+        <div class="scroll"><table id="monthTable"></table></div>
+      </div>
+    </div>
+
+    <div id="intro" class="panel">
+      <h2>Start by dropping in your usage CSV</h2>
+      <p class="note fs13">
+        Download your half-hourly electricity data from Octopus, then drop the CSV on the left.
+        Rates are fetched live from the public Octopus API for whichever region and tariff you
+        pick, and cached in your browser. Nothing is uploaded anywhere — the whole simulation
+        runs in this page.
+      </p>
+      <h3>What the model assumes</h3>
+      <ul class="note fs13">
+        <li>Capacity is <b>usable</b> kWh; round-trip loss applies on charge, so storing 32 kWh imports 32/0.9 = 35.6 kWh.</li>
+        <li>Inverter power caps charge and discharge per half-hour; discharge to load and to export share that cap.</li>
+        <li><b>One cycle per day</b>: all charging precedes all discharging, and everything charged is discharged the same day.</li>
+        <li>Perfect foresight of each day's prices — realistic on Agile, which publishes day-ahead.</li>
+        <li>Your consumption is assumed unchanged by the tariff switch.</li>
+      </ul>
+    </div>
+  </div>
+</main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

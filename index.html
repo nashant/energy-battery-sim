@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- CSP as a meta tag because GitHub Pages can't set response headers.
+     frame-ancestors is omitted: ignored in meta CSP per spec. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://api.octopus.energy; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Battery &amp; tariff simulator</title>
 <link rel="stylesheet" href="styles.css">

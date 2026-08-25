@@ -91,4 +91,200 @@ ok('slotAtX slot-10 centre', slotAtX(40 + (420 / 48) * 10.5, 48) === 10);
 ok('slotAtX DST short day', slotAtX(460 - 0.01, 46) === 45);
 ok('slotAtX null for empty day', slotAtX(200, 0) === null);
 
+import { Forecaster, FORECAST_DEFAULTS } from '../js/causal.js';
+
+// cold start: zero forecast everywhere, ratio 1
+{
+  const f = new Forecaster();
+  ok('forecaster cold start is zero', f.base('wd', 17) === 0);
+  ok('forecaster cold ratio is 1', f.ratio() === 1);
+  ok('forecaster cold forecast zeros',
+     f.forecast([{ date: '2025-08-04', slotOfDay: 10 }], '2025-08-04')[0] === 0);
+}
+// seeding: first completed day IS the profile; EWMA thereafter
+{
+  const f = new Forecaster();
+  const day = new Array(48).fill(0.5);
+  f.completeDay('2025-08-04', day);                       // Monday -> wd seed
+  ok('forecaster seeds first wd day', close(f.base('wd', 3), 0.5));
+  ok('forecaster we falls back to wd', close(f.base('we', 3), 0.5));
+  const day2 = new Array(48).fill(1.0);
+  f.completeDay('2025-08-05', day2);                      // Tuesday -> EWMA
+  ok('forecaster EWMA update', close(f.base('wd', 3), 0.15 * 1.0 + 0.85 * 0.5));
+  const sat = new Array(48).fill(2.0);
+  f.completeDay('2025-08-09', sat);                       // Saturday -> we seed
+  ok('forecaster we seeds independently', close(f.base('we', 3), 2.0));
+  ok('forecaster wd untouched by we day', close(f.base('wd', 3), 0.575));
+}
+// DST: null entries keep old profile value
+{
+  const f = new Forecaster();
+  f.completeDay('2025-08-04', new Array(48).fill(1.0));
+  const short = new Array(48).fill(0.4); short[2] = null;
+  f.completeDay('2025-08-05', short);
+  ok('forecaster null slot keeps old value', close(f.base('wd', 2), 1.0));
+  ok('forecaster non-null slot updates', close(f.base('wd', 3), 0.15 * 0.4 + 0.85 * 1.0));
+}
+// intra-day ratio: dampened, ramping, never crossing day boundary
+{
+  const f = new Forecaster();
+  f.completeDay('2025-08-04', new Array(48).fill(1.0));
+  for (let s = 0; s < 8; s++) f.settle('2025-08-05', s, 2.0);   // running 2x profile
+  // r=2, lambda = 0.75 * min(1, 8/16) = 0.375 -> ratio = 1 + 0.375*(2-1)
+  ok('forecaster ratio ramps', close(f.ratio(), 1.375));
+  const fc = f.forecast([{ date: '2025-08-05', slotOfDay: 20 },
+                         { date: '2025-08-06', slotOfDay: 20 }], '2025-08-05');
+  ok('forecaster ratio applies today', close(fc[0], 1.375));
+  ok('forecaster ratio not tomorrow', close(fc[1], 1.0));
+  f.completeDay('2025-08-05', new Array(48).fill(2.0));
+  ok('forecaster ratio resets on day complete', f.ratio() === 1);
+}
+ok('forecaster dayType weekday', Forecaster.dayType('2025-08-04') === 'wd');
+ok('forecaster dayType weekend', Forecaster.dayType('2025-08-09') === 'we');
+
+import { solveHorizon } from '../js/causal.js';
+import { makeCfg } from '../js/optimiser.js';
+
+const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                      inverterKw: 20, totalImportLimitKw: null, maxChargePrice: null,
+                      exportLimitKw: null });
+
+// cheap->dear pairing, twice, no export. Slot 2 is 9p (not 10p) so the second
+// pair's source is deterministic — with a tie the greedy would put both kWh at slot 0.
+{
+  const p = solveHorizon(0, [10, 30, 9, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false);
+  ok('horizon pairs cheap->dear #1', close(p.chg.get(0) ?? 0, 1));
+  ok('horizon pairs cheap->dear #2', close(p.chg.get(2) ?? 0, 1));
+  ok('horizon discharges to load', close(p.discharge.get(1).load, 1));
+  ok('horizon no unprofitable charge', (p.chg.get(1) ?? 0) === 0);
+}
+// initial SOC spent at the best slot, no charging needed
+{
+  const p = solveHorizon(1, [30, 10], [0, 0], [1, 0], CFG, 'scattered', false);
+  ok('horizon spends soc0 at best value', close(p.discharge.get(0).load, 1));
+  ok('horizon soc0 needs no charge', p.chg.size === 0);
+  ok('horizon plannedSoc drains', close(p.plannedSoc[0], 0));
+}
+// full pack blocks charging until after discharge (headroom)
+{
+  const cfgSmall = makeCfg({ capacity: 1, roundTrip: 1, dischargeFloorPct: 0,
+                             inverterKw: 20, totalImportLimitKw: null,
+                             maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(1, [5, 30, 6, 31], [0, 0, 0, 0], [0, 1, 0, 1], cfgSmall, 'scattered', false);
+  // soc0 commits to slot 3 (val 31, best) first: minOver leaves nothing free for
+  // slot 1's pairing, and slot 0 has zero headroom while holding that soc0 — so
+  // slot 1 goes unserved by the battery.
+  ok('horizon respects cap headroom', close(p.discharge.get(3).load, 1));
+  ok('horizon blocked pair skipped', p.discharge.get(1) === undefined);
+}
+// energy-balance at the horizon: dear slot BEFORE cheap slot -> nothing to do
+{
+  const p = solveHorizon(0, [30, 10], [0, 0], [1, 0], CFG, 'scattered', false);
+  ok('horizon never charges for beyond-horizon', p.chg.size === 0 && p.discharge.size === 0);
+}
+// maxChargePrice filter
+{
+  const cfgMax = { ...CFG, maxChgP: 5 };
+  const p = solveHorizon(0, [10, 30], [0, 0], [0, 1], cfgMax, 'scattered', false);
+  ok('horizon honours maxChargePrice', p.chg.size === 0);
+}
+// export + net settlement: exp > imp still serves load first
+{
+  const cfgX = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 2, totalImportLimitKw: null, maxChargePrice: null,
+                         exportLimitKw: null });
+  const p = solveHorizon(0, [5, 20], [0, 25], [0, 0.5], cfgX, 'scattered', true);
+  const d = p.discharge.get(1);
+  ok('horizon net settlement load first', close(d.load, 0.5));
+  // slotOut = 1 kWh (2 kW): 0.5 to load, 0.5 to export
+  ok('horizon export with remainder', close(d.export, 0.5));
+}
+// round-trip efficiency prices the charge correctly: spread must beat 1/eff
+{
+  const cfgE = makeCfg({ capacity: 10, roundTrip: 0.5, dischargeFloorPct: 0,
+                         inverterKw: 20, totalImportLimitKw: null, maxChargePrice: null,
+                         exportLimitKw: null });
+  const pNo = solveHorizon(0, [10, 19], [0, 0], [0, 1], cfgE, 'scattered', false);
+  ok('horizon eff kills thin spread', pNo.chg.size === 0);   // 10/0.5=20 > 19
+  const pYes = solveHorizon(0, [10, 21], [0, 0], [0, 1], cfgE, 'scattered', false);
+  ok('horizon eff allows fat spread', close(pYes.chg.get(0), 2)); // 1 kWh out needs 2 in
+}
+// trajectory invariant: plannedSoc must stay within [0, cfg.cap] for every slot —
+// covers the cheap->dear pairing case, the cap-headroom case, and a reviewer
+// counterexample that would overfill a 1 kWh pack if pass-2's charge decay didn't
+// persist to the horizon end (addRange(...,c.t,T,q) must match commit()'s [b.t,T) decay)
+{
+  const cap1 = makeCfg({ capacity: 1, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 20, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const scenarios = [
+    { p: solveHorizon(0, [10, 30, 9, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false), cap: CFG.cap },
+    { p: solveHorizon(1, [5, 30, 6, 31], [0, 0, 0, 0], [0, 1, 0, 1], cap1, 'scattered', false), cap: cap1.cap },
+  ];
+  const pCounter = solveHorizon(0, [1, 40, 2, 30], [0, 0, 0, 0], [0, 1, 0, 2], cap1, 'scattered', false);
+  scenarios.push({ p: pCounter, cap: cap1.cap });
+  for (const { p, cap } of scenarios) {
+    let inBounds = true;
+    for (let t = 0; t < p.plannedSoc.length; t++) {
+      if (!(p.plannedSoc[t] >= -1e-9 && p.plannedSoc[t] <= cap + 1e-9)) inBounds = false;
+    }
+    ok('horizon plannedSoc stays within [0, cap]', inBounds);
+  }
+  // no single charge event may exceed the pack cap (this is what the bug broke: the
+  // buggy addRange(L,c.t,b.t,q) let slot 2 alone plan chg=2 into a 1 kWh/eff-1 pack
+  // because its headroom check read a not-yet-decayed L; the total across the whole
+  // plan, 2 kWh over two separate charge/discharge cycles, is legitimately > cap)
+  const maxChg = Math.max(...pCounter.chg.values());
+  ok('horizon counterexample single charge does not overfill 1 kWh pack', maxChg <= cap1.cap / cap1.eff + 1e-9);
+}
+
+// contiguous: one unbroken charge window, discharge after it. A 2 kW inverter
+// (1 kWh/slot) forces the window to genuinely span two slots.
+{
+  const cfgC = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 2, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(0, [10, 10, 30, 30], [0, 0, 0, 0], [0, 0, 1, 1], cfgC, 'contiguous', false);
+  ok('contig charges a window', close((p.chg.get(0) ?? 0) + (p.chg.get(1) ?? 0), 2));
+  ok('contig window is contiguous', p.window !== null && p.window[1] - p.window[0] === 1);
+  ok('contig discharges after', close(p.discharge.get(2).load + p.discharge.get(3).load, 2));
+}
+// contiguous window skips a cheap-dear-cheap split it would need scattered mode for
+{
+  const p = solveHorizon(0, [10, 40, 10, 30, 30], [0, 0, 0, 0, 0], [0, 0.2, 0, 1, 1],
+                         CFG, 'contiguous', false);
+  // one window only; the 40p slot never charges
+  ok('contig never charges the dear middle', (p.chg.get(1) ?? 0) === 0);
+}
+// contiguous respects held soc0 headroom
+{
+  const cfgSmall = makeCfg({ capacity: 2, roundTrip: 1, dischargeFloorPct: 0,
+                             inverterKw: 20, totalImportLimitKw: null,
+                             maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(1.5, [5, 30, 30], [0, 0, 0], [0, 1, 1], cfgSmall, 'contiguous', false);
+  // soc0 1.5 spent on the two 30p slots (pass 1); window at slot 0 has 0.5 headroom
+  ok('contig headroom-limited fill', close(p.chg.get(0) ?? 0, 0.5));
+}
+// one-meter rule at the planner level: a slot either imports or exports, never both.
+// Flat 12p import against a flat 15p export makes buy-and-resell inside one half-hour
+// look like free money, which is exactly what a greedy pairer will book if unguarded.
+{
+  const cfgM = makeCfg({ capacity: 10, roundTrip: 0.9, dischargeFloorPct: 10,
+                         inverterKw: 5, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const T = 12;
+  const impF = new Array(T).fill(12), expF = new Array(T).fill(15), ldF = new Array(T).fill(0.3);
+  for (const mode of ['scattered', 'contiguous']) {
+    const p = solveHorizon(5, impF, expF, ldF, cfgM, mode, true);
+    const both = [...p.chg.keys()].filter((t) => p.chg.get(t) > 1e-9 && p.discharge.has(t) &&
+      p.discharge.get(t).load + p.discharge.get(t).export > 1e-9);
+    ok(`horizon charge XOR discharge per slot (${mode})`, both.length === 0);
+  }
+  // pass 1 spends soc0 = 5 (usable cap 9, slotOut 2.5) over slots 0,1,2 as 2.5/2.5 pack-side
+  // minus in-slot load netting, leaving slot 2 partly committed — so the contiguous window
+  // can only start at slot 3, not slot 2.
+  const pc = solveHorizon(5, impF, expF, ldF, cfgM, 'contiguous', true);
+  ok('contig window starts after pass-1 discharge', pc.window !== null && pc.window[0] === 3);
+}
+
 process.exit(fail ? 1 : 0);

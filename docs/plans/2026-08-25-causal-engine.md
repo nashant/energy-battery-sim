@@ -187,9 +187,10 @@ const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
                       inverterKw: 20, totalImportLimitKw: null, maxChargePrice: null,
                       exportLimitKw: null });
 
-// cheap->dear pairing, twice, no export
+// cheap->dear pairing, twice, no export. Slot 2 is 9p (not 10p) so the second
+// pair's source is deterministic — with a tie the greedy would put both kWh at slot 0.
 {
-  const p = solveHorizon(0, [10, 30, 10, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false);
+  const p = solveHorizon(0, [10, 30, 9, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false);
   ok('horizon pairs cheap->dear #1', close(p.chg.get(0) ?? 0, 1));
   ok('horizon pairs cheap->dear #2', close(p.chg.get(2) ?? 0, 1));
   ok('horizon discharges to load', close(p.discharge.get(1).load, 1));
@@ -332,8 +333,16 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
 // the same shape solveDay's contiguous branch had, made soc0/trajectory-aware.
 function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExport) {
   const T = imp.length;
+  // Remaining discharge opportunity from slot s: load already served in pass 1
+  // must not be counted again (load-first netting), and per-slot output caps hold.
   const bucketsFrom = (s) => dischargeBuckets(imp, exp, loadF, s, allowExport, cfg)
-    .map((b) => ({ ...b, qty: Math.min(b.qty, slotRem[b.t]) }))
+    .map((b) => {
+      const committed = disRaw.get(b.t) || 0;
+      const base = b.kind === 'load'
+        ? Math.max(0, Math.min(loadF[b.t], cfg.slotOut) - committed)
+        : b.qty;
+      return { ...b, qty: Math.min(base, slotRem[b.t]) };
+    })
     .filter((b) => b.qty > EPS);
   let best = null;
   for (let i = 0; i < T; i++) {
@@ -341,7 +350,12 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
       if (imp[i + len - 1] > cfg.maxChgP) break;
       const head = cfg.cap - maxOver(L, i, i + len);
       if (head <= EPS) continue;
-      let rem = head, cost = 0;
+      const bk = bucketsFrom(i + len);
+      const absorbable = bk.reduce((a, b) => a + b.qty, 0);
+      // fill only what the remaining horizon can absorb — the energy-balance rule
+      const target = Math.min(head, absorbable);
+      if (target <= MARGIN) continue;
+      let rem = target, cost = 0;
       const w = new Map();
       for (let t = i; t < i + len; t++) {
         const add = Math.min(chargeInSlot(cfg, loadF[t]) * cfg.eff, rem);
@@ -350,9 +364,8 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
         w.set(t, add / cfg.eff);
         rem -= add;
       }
-      const E = head - rem;
+      const E = target - rem;
       if (E <= MARGIN) continue;
-      const bk = bucketsFrom(i + len);
       const gain = valueFor(cumAll(bk), E);
       if (gain === null) continue;
       if (!best || gain - cost > best.profit + MARGIN) {
@@ -393,9 +406,13 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
 - [ ] **Step 1: Write the tests** — append to `test/units.mjs`:
 
 ```js
-// contiguous: one unbroken charge window, discharge after it
+// contiguous: one unbroken charge window, discharge after it. A 2 kW inverter
+// (1 kWh/slot) forces the window to genuinely span two slots.
 {
-  const p = solveHorizon(0, [10, 10, 30, 30], [0, 0, 0, 0], [0, 0, 1, 1], CFG, 'contiguous', false);
+  const cfgC = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 2, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(0, [10, 10, 30, 30], [0, 0, 0, 0], [0, 0, 1, 1], cfgC, 'contiguous', false);
   ok('contig charges a window', close((p.chg.get(0) ?? 0) + (p.chg.get(1) ?? 0), 2));
   ok('contig window is contiguous', p.window !== null && p.window[1] - p.window[0] === 1);
   ok('contig discharges after', close(p.discharge.get(2).load + p.discharge.get(3).load, 2));
@@ -487,9 +504,14 @@ ok('replay reports warmup', r.warmupDays === 14);
 ok('replay replans daily-ish', r.replans >= DAYS - 1 && r.replans <= DAYS * 3);
 ok('replay carried is gone', !('carried' in r));
 ok('replay plannedSoc present late', r.slots[DAYS * 48 - 10].plannedSoc !== null);
-// causal cold start: day 1 has no load forecast, so no battery->load discharge
-const day1 = r.slots.slice(0, 48);
-ok('replay day-1 serves no load from battery', day1.every((s) => s.disLoad <= 1e-9));
+// causal cold start: with export disabled and no load forecast yet, day 1 has
+// nothing to optimise — no charging, no discharge. (With export enabled, day-1
+// arbitrage IS expected, and execution nets planned export to actual load first,
+// so asserting on the export run would be wrong.)
+const rn0 = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, allowExport: false } });
+const day1 = rn0.slots.slice(0, 48);
+ok('replay day-1 cold start does nothing (no export)',
+   day1.every((s) => s.chg <= 1e-9 && s.disLoad <= 1e-9));
 // contiguous mode also runs clean
 const rc = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, cycle: 'contiguous' } });
 ok('replay contiguous clean', rc.socViolations === 0 && rc.energy < n.energy - 1);
@@ -506,6 +528,9 @@ process.exit(fail ? 1 : 0);
 
 ```js
 import { Forecaster, FORECAST_DEFAULTS, solveHorizon } from './causal.js';
+// extend data.js's existing optimiser.js import with chargeInSlot (runReplay
+// re-checks charge room against ACTUAL load at execution time)
+import { makeCfg, chargeInSlot } from './optimiser.js';
 
 const PUBLISH_HHMM = '16:00';
 const slotOfDay = (wall) => {

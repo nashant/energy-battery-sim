@@ -2,7 +2,10 @@
 // so wall clock comes from the string and the UTC instant from Date.parse — no timezone
 // library needed, and correct across both DST changeovers.
 
-import { makeCfg, solveDay } from './optimiser.js';
+import { Forecaster, FORECAST_DEFAULTS, solveHorizon } from './causal.js';
+// chargeInSlot is here because runReplay re-checks charge room against ACTUAL load
+// at execution time, not the forecast the plan was built on
+import { makeCfg, chargeInSlot } from './optimiser.js';
 
 const M3_TO_KWH = 1.02264 * 39.5 / 3.6;   // volume correction x calorific value / 3.6
 
@@ -179,213 +182,128 @@ export function dayKeys(usage, boundary) {
   return usage.localFloat.map((t) => new Date(t + shift).toISOString().slice(0, 10));
 }
 
-// Fixed point: re-cut at each group's first charging slot until stable (~3 iterations).
-// Must match test/adaptive_boundary.py solve_groups exactly — test/cycle.mjs asserts it.
-export function cycleEdges(imp, exp, load, cfg, mode, allowExport, initialEdges, maxIter = 12) {
+const PUBLISH_HHMM = '16:00';
+const slotOfDay = (wall) => {
+  const hh = Number(wall.slice(11, 13)), mm = Number(wall.slice(14, 16));
+  return hh * 2 + (mm >= 30 ? 1 : 0);
+};
+
+// The causal loop: plan on what was knowable, execute against what actually happened.
+// A plan is made at the start of the run and re-made at each price publication; between
+// publications the standing plan is executed slot by slot against ACTUAL load, so the
+// battery follows it only as far as reality allows. Exported for tests and fixtures.
+export function runReplay(usage, load, imp, exp, cfg, params) {
   const T = load.length;
-  let edges = initialEdges;
-  let prevKey = null;
-  for (let it = 0; it < maxIter; it++) {
-    const starts = [];
-    for (let g = 0; g < edges.length - 1; g++) {
-      const a = edges[g], b = edges[g + 1];
-      if (b - a < 2) continue;
-      const r = solveDay(imp.slice(a, b), exp.slice(a, b), load.slice(a, b),
-                         cfg, mode, allowExport);
-      if (r.charge.size) starts.push(a + Math.min(...r.charge.keys()));
+  const mode = params.cycle || 'contiguous';
+  const allowExport = !!params.allowExport;
+  const agileKey = dayKeys(usage, 'agile');            // tariff-day (23:00-23:00)
+  const calKey = usage.wall.map((w) => w.slice(0, 10));
+  // end index (exclusive) of each tariff-day
+  const dayEnd = new Map();
+  for (let i = 0; i < T; i++) dayEnd.set(agileKey[i], i + 1);
+
+  const fc = new Forecaster();
+  const slots = new Array(T);
+  let soc = 0, replans = 0;
+  let plan = null, planStart = 0;                       // plan covers [planStart, horizon)
+  let horizon = dayEnd.get(agileKey[0]);
+  let dayBuf = new Array(48).fill(null);                // actuals by slotOfDay
+
+  const replanAt = (i, h) => {
+    const entries = [];
+    for (let t = i; t < h; t++) entries.push({ date: calKey[t], slotOfDay: slotOfDay(usage.wall[t]) });
+    const loadF = fc.forecast(entries, calKey[i]);
+    plan = solveHorizon(soc, imp.slice(i, h), exp.slice(i, h), loadF, cfg, mode, allowExport);
+    planStart = i; horizon = h; replans++;
+  };
+
+  if (params.useBattery !== false) replanAt(0, horizon);
+
+  for (let i = 0; i < T; i++) {
+    // publication: first slot of each calendar day at/after 16:00 extends the horizon
+    // to the end of the NEXT tariff-day; the new plan takes effect from the NEXT slot.
+    const publishes = params.useBattery !== false &&
+      usage.wall[i].slice(11, 16) >= PUBLISH_HHMM &&
+      (i === 0 || usage.wall[i - 1].slice(11, 16) < PUBLISH_HHMM ||
+       calKey[i - 1] !== calKey[i]);
+
+    // execute the active plan against ACTUAL load
+    let cin = 0, dl = 0, dx = 0, plannedSoc = null;
+    if (plan && i >= planStart && i < horizon) {
+      const n = i - planStart;
+      const room = chargeInSlot(cfg, load[i]);          // import cap vs ACTUAL load
+      cin = Math.min(plan.chg.get(n) || 0, room, (cfg.cap - soc) / cfg.eff);
+      const dd = plan.discharge.get(n);
+      if (dd) {
+        const q = Math.min(dd.load + dd.export, soc + cin * cfg.eff, cfg.slotOut);
+        dl = Math.min(load[i], q);
+        dx = allowExport ? Math.min(q - dl, cfg.exportSlot) : 0;
+      }
+      plannedSoc = plan.plannedSoc[n] + cfg.reserve;
     }
-    const key = starts.join(',');
-    if (key === prevKey) break;
-    prevKey = key;
-    edges = [...new Set([0, ...starts.filter((s) => s > 0 && s < T), T])]
-      .sort((x, y) => x - y);
+    soc += cin * cfg.eff - dl - dx;
+
+    slots[i] = { i, cin, dl, dx, soc, plannedSoc };
+
+    // settle: forecaster learns the actual, day buffer fills
+    const sd = slotOfDay(usage.wall[i]);
+    fc.settle(calKey[i], sd, load[i]);
+    dayBuf[sd] = dayBuf[sd] === null ? load[i] : (dayBuf[sd] + load[i]) / 2;  // DST repeat: average
+    const dayDone = i + 1 === T || calKey[i + 1] !== calKey[i];
+    if (dayDone) { fc.completeDay(calKey[i], dayBuf); dayBuf = new Array(48).fill(null); }
+
+    if (publishes) {
+      const next = dayEnd.get(agileKey[Math.min(dayEnd.get(agileKey[i]), T - 1)]) ?? T;
+      replanAt(Math.min(i + 1, T - 1), Math.max(next, dayEnd.get(agileKey[i])));
+    }
   }
-  return edges;
+  return { slots, replans, warmupDays: FORECAST_DEFAULTS.warmupDays };
 }
 
-// Hold pass: at each window boundary, energy the outgoing window would dump into its
-// cheapest discharge slots is carried forward instead whenever the next window values it
-// higher — serving load before its discharge phase (bridging) or displacing its dearest
-// refill kWh. Mirrors test/pymodel.py hold_pass exactly (asserted by test/hold.mjs).
-const HEPS = 1e-9, HMARGIN = 1e-6;
-export function holdPass(sols, imp, exp, load, cfg) {
-  const held = new Array(sols.length).fill(0);
-  for (let g = 0; g < sols.length - 1; g++) {
-    const w = sols[g], w1 = sols[g + 1];
-    const dis = w.r.discharge;
-    let lastChg = -1;
-    for (const n of w.r.charge.keys()) lastChg = Math.max(lastChg, n);
-    const unw = [];
-    for (const [n, dd] of dis) {
-      // only tail discharge: unwinding pre-fill bridging would leave inbound energy
-      // in the pack when the fill lands, overflowing capacity
-      if (n <= lastChg) continue;
-      const t = w.a + n;
-      if (dd.export > HEPS) unw.push([exp[t], n, dd.export, 'export']);
-      if (dd.load > HEPS) unw.push([imp[t], n, dd.load, 'load']);
-    }
-    if (!unw.length) continue;
-    unw.sort((x, y) => x[0] - y[0]);
-
-    const a1 = w1.a;
-    const chg1 = w1.r.charge, dis1 = w1.r.discharge;
-    const s1 = dis1.size ? Math.min(...dis1.keys()) : (w1.b - a1);
-    const cand = [];
-    for (let n = 0; n < s1; n++) {
-      const t = a1 + n;
-      if ((chg1.get(n) || 0) <= HEPS && load[t] > HEPS) {
-        cand.push([imp[t], n, Math.min(load[t], cfg.slotOut), 'load']);
-      }
-    }
-    for (const [n, c] of chg1) cand.push([imp[a1 + n] / cfg.eff, n, c * cfg.eff, 'fill']);
-    cand.sort((x, y) => y[0] - x[0]);
-
-    let plan = [], K = 0, ui = 0;
-    for (const [v, n, q0, kind] of cand) {
-      let q = q0;
-      while (q > HEPS && ui < unw.length) {
-        const u = unw[ui];
-        if (u[0] >= v - HMARGIN) { q = -1; break; }
-        const take = Math.min(q, u[2]);
-        plan.push([take, u, n, kind, v]);
-        u[2] -= take; q -= take; K += take;
-        if (u[2] <= HEPS) ui++;
-      }
-      if (q < 0 || ui >= unw.length) break;
-    }
-    if (K <= HEPS) continue;
-
-    // capacity feasibility with the inbound energy; drop cheapest bridging items on overflow
-    for (;;) {
-      const addL = new Map(), cutF = new Map();
-      let kIn = 0;
-      for (const [take, , n, kind] of plan) {
-        kIn += take;
-        if (kind === 'load') addL.set(n, (addL.get(n) || 0) + take);
-        else cutF.set(n, (cutF.get(n) || 0) + take);
-      }
-      let soc = kIn, ok = true;
-      for (let n = 0; n < w1.b - a1; n++) {
-        soc += ((chg1.get(n) || 0) - (cutF.get(n) || 0) / cfg.eff) * cfg.eff;
-        const dd = dis1.get(n);
-        if (dd) soc -= dd.load + dd.export;
-        soc -= addL.get(n) || 0;
-        if (soc > cfg.cap + 1e-6) { ok = false; break; }
-      }
-      if (ok) break;
-      let di = -1;
-      for (let i = 0; i < plan.length; i++) {
-        if (plan[i][3] === 'load' && (di < 0 || plan[i][4] < plan[di][4])) di = i;
-      }
-      if (di < 0) { plan = []; break; }
-      plan.splice(di, 1);
-    }
-    if (!plan.length) continue;
-
-    let k = 0;
-    for (const [take, u, n, kind] of plan) {
-      const dd = dis.get(u[1]);
-      dd[u[3]] -= take;
-      if (kind === 'load') {
-        let dd1 = dis1.get(n);
-        if (!dd1) { dd1 = { load: 0, export: 0 }; dis1.set(n, dd1); }
-        dd1.load += take;
-      } else {
-        const c = chg1.get(n) - take / cfg.eff;
-        if (c <= HEPS) chg1.delete(n); else chg1.set(n, c);
-      }
-      k += take;
-    }
-    held[g + 1] = k;
-  }
-  return held;
-}
-
+// params.boundary is ignored: the replay's horizons come from the tariff day and the
+// 16:00 publication, not from a user-chosen window boundary.
 export function runSim({ usage, load, imp, exp, scTotalP, params }) {
   const cfg = makeCfg(params);
-  const mode = params.cycle || 'scattered';
-  const allowExport = !!params.allowExport;
-  const useBattery = params.useBattery !== false;
+  const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params);
 
-  const groupList = [];
-  if (params.boundary === 'cycle' && useBattery) {
-    const midKeys = dayKeys(usage, 'midnight');
-    const initial = [0];
-    for (let i = 1; i < load.length; i++) if (midKeys[i] !== midKeys[i - 1]) initial.push(i);
-    initial.push(load.length);
-    const edges = cycleEdges(imp, exp, load, cfg, mode, allowExport, initial);
-    const seen = new Set();
-    for (let g = 0; g < edges.length - 1; g++) {
-      let k = usage.wall[edges[g]];
-      while (seen.has(k)) k += '·';   // DST repeat hour could duplicate a wall string
-      seen.add(k);
-      const ix = [];
-      for (let i = edges[g]; i < edges[g + 1]; i++) ix.push(i);
-      groupList.push({ k, ix });
-    }
-  } else {
-    const keys = dayKeys(usage, params.boundary === 'cycle' ? 'midnight' : params.boundary);
-    const groups = new Map();
-    keys.forEach((k, i) => {
-      if (!groups.has(k)) groups.set(k, []);
-      groups.get(k).push(i);
-    });
-    for (const k of [...groups.keys()].sort()) groupList.push({ k, ix: groups.get(k) });
-  }
-
-  const sols = groupList.map(({ k, ix }) => {
-    const r = useBattery
-      ? solveDay(ix.map((i) => imp[i]), ix.map((i) => exp[i]), ix.map((i) => load[i]),
-                 cfg, mode, allowExport)
-      : { profit: 0, charge: new Map(), discharge: new Map(), kwhOut: 0, window: null };
-    return { k, ix, a: ix[0], b: ix[0] + ix.length, r };
-  });
-  const held = useBattery ? holdPass(sols, imp, exp, load, cfg)
-                          : new Array(sols.length).fill(0);
-
-  // presentation is always calendar days, whatever windows the strategy solved on:
-  // costs are per-slot, so any grouping sums exactly
+  // presentation is always calendar days: costs are per-slot, so any grouping sums exactly
   const slots = new Array(load.length);
   const byDate = new Map();
-  let maxExportSlot = 0, violations = 0, soc = 0;
+  let maxExportSlot = 0, violations = 0;
 
-  for (const { ix, r } of sols) {
-    for (let n = 0; n < ix.length; n++) {
-      const i = ix[n];
-      const cin = r.charge.get(n) || 0;
-      const dd = r.discharge.get(n) || { load: 0, export: 0 };
-      soc += cin * cfg.eff - dd.load - dd.export;
-      if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
-      const gImp = load[i] + cin - dd.load;
-      const slotP = gImp * imp[i] - dd.export * exp[i];
-      maxExportSlot = Math.max(maxExportSlot, dd.export);
-      const date = usage.wall[i].slice(0, 10);
-      const hhmm = usage.wall[i].slice(11);
-      let d = byDate.get(date);
-      if (!d) {
-        d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, w0: null, w1: null };
-        byDate.set(date, d);
-      }
-      d.kwh += load[i];
-      d.baseP += load[i] * imp[i];
-      d.costP += slotP;
-      d.kwhOut += dd.load + dd.export;
-      if (cin > 1e-9) {
-        if (d.w0 === null) d.w0 = hhmm;
-        d.w1 = hhmm;
-      }
-      slots[i] = {
-        day: date, wall: usage.wall[i], hhmm,
-        imp: imp[i], exp: exp[i], load: load[i], chg: cin,
-        disLoad: dd.load, disExp: dd.export,
-        gridImp: Math.max(0, gImp), gridExp: dd.export,
-        gridToHouse: Math.max(0, load[i] - dd.load),
-        soc: Math.max(0, soc) + cfg.reserve,
-        socPct: cfg.cap + cfg.reserve
-          ? 100 * (Math.max(0, soc) + cfg.reserve) / (cfg.cap + cfg.reserve) : 0,
-        costP: slotP,
-      };
+  for (let i = 0; i < load.length; i++) {
+    const { cin, dl, dx, soc, plannedSoc } = exec[i];
+    if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
+    const gImp = load[i] + cin - dl;
+    const slotP = gImp * imp[i] - dx * exp[i];
+    maxExportSlot = Math.max(maxExportSlot, dx);
+    const date = usage.wall[i].slice(0, 10);
+    const hhmm = usage.wall[i].slice(11);
+    let d = byDate.get(date);
+    if (!d) {
+      d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, w0: null, w1: null };
+      byDate.set(date, d);
     }
+    d.kwh += load[i];
+    d.baseP += load[i] * imp[i];
+    d.costP += slotP;
+    d.kwhOut += dl + dx;
+    if (cin > 1e-9) {
+      if (d.w0 === null) d.w0 = hhmm;
+      d.w1 = hhmm;
+    }
+    slots[i] = {
+      day: date, wall: usage.wall[i], hhmm,
+      imp: imp[i], exp: exp[i], load: load[i], chg: cin,
+      disLoad: dl, disExp: dx,
+      gridImp: Math.max(0, gImp), gridExp: dx,
+      gridToHouse: Math.max(0, load[i] - dl),
+      soc: Math.max(0, soc) + cfg.reserve,
+      socPct: cfg.cap + cfg.reserve
+        ? 100 * (Math.max(0, soc) + cfg.reserve) / (cfg.cap + cfg.reserve) : 0,
+      plannedSoc,
+      costP: slotP,
+    };
   }
   const perDay = [...byDate.values()].map((d) => ({
     day: d.day, kwh: d.kwh, baseP: d.baseP, costP: d.costP,
@@ -393,7 +311,6 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
     window: d.w0 !== null ? [d.w0, d.w1] : null,
     used: d.kwhOut > 1e-9,
   }));
-  const carried = held.reduce((a, b) => a + b, 0);
 
   const energy = perDay.reduce((a, d) => a + d.costP, 0) / 100;
   const baseline = perDay.reduce((a, d) => a + d.baseP, 0) / 100;
@@ -406,11 +323,12 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
     savedVsNoBattery: baseline - energy,
     kwh: load.reduce((a, b) => a + b, 0),
     nDays, slotCount: load.length,
-    cycled, carried, usableCap: cfg.cap,
+    cycled, usableCap: cfg.cap,
     batteryDays: perDay.filter((d) => d.used).length, dayCount: perDay.length,
     meanThroughput: cycled / Math.max(1, perDay.length),
     utilisation: 100 * (cycled / Math.max(1, perDay.length)) / cfg.cap,
     maxExportSlot, socViolations: violations,
+    warmupDays, replans,
     perDay, slots,
   };
 }

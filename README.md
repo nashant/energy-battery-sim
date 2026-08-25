@@ -28,59 +28,63 @@ the code uses ES modules.
   export share that cap. A separate G100 export limit can cap export below inverter size.
 - By default the inverter limit applies to battery charging only, so grid import during a
   charge slot is house load *plus* battery charge. "Cap total grid import" switches that.
-- **One cycle per discharge window**: within a window all charging strictly precedes all
-  discharging, and every kWh charged is either discharged inside the window or carried
-  forward by the hold pass (below). The energy-balance rule is load bearing — without it
-  the optimiser charges through negative-price slots purely to collect the payment and
-  lets the energy evaporate, which is worth real money and is not physical.
-- **Discharge by** picks the window: *end of day* (local midnight), *end of Agile day*
-  (23:00), or *next charge cycle*. The last redefines the window as charge-start to
-  charge-start via a fixed point — solve on calendar cuts, re-cut each window at its first
-  charging slot, repeat until stable (~3 iterations). Cost accounting itself is
-  window-independent (verified to 4 dp); only the cycle structure moves.
-- **Hold pass**: at each window boundary, energy the outgoing window would dump into its
-  cheapest discharge slots is carried forward instead whenever the next window values it
-  higher — serving load that falls before its discharge phase (bridging) or displacing
-  its most expensive refill kWh. Kills the sell-low-rebuy-high dumps (~848 kWh/yr on
-  Agile+Outgoing 10 kW) and is worth ~£37/yr on the end-of-day boundary, ~£17/yr on the
-  cycle boundary (they land within £3 of each other once holding is in place).
-- **Net settlement**: a single meter cannot record import and export in the same half
-  hour, so discharge covers the slot's own load before anything exports — even when the
-  export price momentarily exceeds import. Export-while-importing can never appear.
-- Perfect foresight of each day's prices. Realistic on Agile, which publishes day-ahead.
+- **Causal replay.** Run replays your CSV as accelerated real time. The planner
+  only ever sees: the battery's current charge, prices that have been published
+  (Agile day-ahead lands at 16:00), and a load *forecast* built from days it has
+  already lived through. It starts knowing nothing — the first two weeks are a
+  cold-start warm-up while the forecast learns your house.
+- **Planning.** At 16:00 each day the plan is recomputed from the next half hour
+  out to 23:00 tomorrow: charge in the cheapest slots, hold, serve the house and
+  export through the peaks — sized against forecast load, never actual future
+  load. Energy is only charged if it can be placed profitably before the end of
+  the known-price horizon.
+- **Execution.** Each half hour the plan meets reality: discharge covers the
+  slot's actual load first (a meter settles one direction per half hour), any
+  planned remainder exports under the G100 cap, and the forecast learns from the
+  actual. A dashed line on the day chart shows what the plan expected the state
+  of charge to be; the solid area shows what actually happened.
+- Numbers from this engine are lower than the old perfect-foresight build's —
+  deliberately. Those assumed a year of hindsight; these are achievable.
 - Consumption is assumed unchanged by the tariff switch.
 
 Two cycle rules: **scattered** charges in any set of slots before discharging begins;
-**contiguous** charges at full power across one unbroken window. Scattered is always at
-least as good on cost, since its feasible set contains every contiguous plan. The
-defaults are **contiguous + next charge cycle** — one unbroken fill per cycle is the
-gentler, more realistic dispatch; on the reference year it costs ~£10/yr over scattered
-(£673.68 vs £663.52 at 10 kW, Agile+Outgoing, region J).
+**contiguous** charges at full power across a single window (slots already committed
+to discharge are skipped inside it). The engine defaults to
+**contiguous** when the cycle mode isn't specified.
 
 ## Correctness
 
-The optimiser is a port of `solve_day()` in `agile_battery_sim.py`. Greedy marginal pairing
-is provably optimal here despite the shared per-slot discharge cap — the per-slot feasible
-set is a polymatroid, so the exchange argument holds. That was checked against an exact LP
-(HiGHS) over 48 stratified real days and 400 randomised synthetic days: worst gap 0.0000p.
+The optimiser is `solveHorizon` in `js/causal.js`: a greedy planner over the published
+price horizon. It first spends whatever is already in the pack on the best-valued slots,
+then books cheap-charge → dear-discharge pairs in order of spread, each one checked
+against the SOC trajectory so no plan can overfill or overdraw the pack. It is a heuristic
+by design, not a claim of optimality — the constraint that matters is causality, not the
+last fraction of a penny: no plan may use a price before its publication time or a load
+before it happens. Two things hold that honest. The planner is mirrored line-for-line in
+Python and the two must agree bit-exactly on committed fixtures, so neither language can
+drift silently. And a causality guard replaces every price and load after a cut point with
+garbage, then asserts that every decision taken before that data would have been published
+is bit-identical — mechanically proving no hindsight leaks in. Physics invariants are asserted
+separately: the one-meter rule, SOC bounds and the max-charge-price filter at both the
+planner and whole-replay level; the inverter cap at the planner level.
 
 ```sh
-node test/validate.mjs   # JS vs Python, per day, on real fixtures
-node test/cycle.mjs      # 'next charge cycle' group structure vs Python, exact
-node test/hold.mjs       # hold pass vs Python: identical held-energy sequence & totals
-node test/e2e.mjs        # whole-year totals via live API, vs Python-mirror figures
+node test/units.mjs      # pure helpers (js/data.js) — no network, no DOM
+node test/replay.mjs     # offline invariants: synthetic year + 46/50-slot DST days
+node test/causal.mjs     # JS vs Python parity on fixtures, + causality guard
+node test/dom.mjs        # index.html/app.js id cross-check + FlowDiagram DOM stub
+node test/e2e.mjs        # whole-year totals via the live Octopus API
 ```
 
-`validate.mjs` matches Python exactly (0.00e+0 worst-day difference across 8 configs,
-including import-cap, G100 and max-charge-price paths).
+The Python reference for the causal engine is `test/causal_model.py` — a line-for-line
+transcription of `js/optimiser.js` (primitives), `js/causal.js` (Forecaster +
+solveHorizon) and the replay loop in `js/data.js`. `test/causal.mjs` checks JS-vs-Python
+parity against fixtures in `test/causal_fixture.json`, regenerated deterministically by
+`test/gen_causal_fixtures.py`. Any edit to `js/causal.js` or the replay loop must be
+mirrored in `test/causal_model.py`, with fixtures regenerated from it.
 
-The Python reference for the current model is `test/pymodel.py` (net-settlement buckets +
-rebalance + hold pass layered over the CLI's solver). The standalone CLI
-(`agile_battery_sim.py`) predates the hold pass and net settlement, so its totals now run
-£20–70/yr higher than the app's; `test/e2e.mjs` records the pre-hold figures alongside
-the current expectations. The remaining CLI-vs-app pence differences on banded tariffs
-(Go, Cosy) come from `fetch-tariff.py` writing prices at 2 decimal places while the app
-uses full API precision.
+The standalone CLI (`agile_battery_sim.py`) predates the causal engine's forecaster and
+replay loop, so its totals assume perfect foresight and don't match the app.
 
 ## Heat pump
 

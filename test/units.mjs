@@ -67,4 +67,17 @@ const invs = sweepInverters(10);
 ok('inverter grid standard', JSON.stringify(invs) === JSON.stringify([3.6, 5, 6, 8, 10, 12]));
 ok('inverter grid inserts odd size', JSON.stringify(sweepInverters(7)) === JSON.stringify([3.6, 5, 6, 7, 8, 10, 12]));
 
+
+import { predictedExportKw } from '../js/data.js';
+
+// voltage-rise ceiling: I = (Vmax − Vsrc)/Z, P = Vmax·I; 253 V = 230 V +10% statutory
+ok('predict 242V 0.25Ω is 11.13 kW', close(predictedExportKw(242, 0.25), 253 * (253 - 242) / 0.25 / 1000));
+ok('predict 242V 0.35Ω is 7.95 kW', close(predictedExportKw(242, 0.35), 253 * (253 - 242) / 0.35 / 1000));
+ok('predict at statutory cap is 0', predictedExportKw(253, 0.25) === 0);
+ok('predict above statutory cap is 0', predictedExportKw(258, 0.25) === 0);
+ok('predict null on zero impedance', predictedExportKw(242, 0) === null);
+ok('predict null on negative impedance', predictedExportKw(242, -0.1) === null);
+ok('predict null on null voltage', predictedExportKw(null, 0.25) === null);
+ok('predict null on zero voltage', predictedExportKw(0, 0.25) === null);
+
 process.exit(fail ? 1 : 0);

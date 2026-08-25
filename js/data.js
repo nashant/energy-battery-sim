@@ -475,3 +475,15 @@ export const sweepCapacities = (cap) =>
     .concat([cap]))].sort((a, b) => a - b);
 export const sweepInverters = (kw) =>
   [...new Set([3.6, 5, 6, 8, 10, 12, kw])].sort((a, b) => a - b);
+
+// Predicted max allowed export from supply voltage rise: exporting I through the
+// network's source impedance lifts the terminals by I·Z, and the DNO must keep the
+// point of connection inside the 253 V statutory cap (230 V +10%). At the cap the
+// terminals sit at vMax, so I = (vMax − sourceV)/Z and P = vMax·I. An estimate of
+// the physics ceiling a G99 study works to — the DNO may grant less (shared feeder).
+export function predictedExportKw(sourceV, sourceOhms, vMax = 253) {
+  if (!Number.isFinite(sourceV) || !Number.isFinite(sourceOhms)
+      || sourceV <= 0 || sourceOhms <= 0) return null;
+  if (sourceV >= vMax) return 0;
+  return vMax * (vMax - sourceV) / sourceOhms / 1000;
+}

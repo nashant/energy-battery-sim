@@ -1,6 +1,6 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
-import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters } from './data.js';
+import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw } from './data.js';
 import { FlowDiagram } from './flow.js';
 
 const $ = (id) => document.getElementById(id);
@@ -40,6 +40,25 @@ $('importTariff').dispatchEvent(new Event('change'));
 $('curSource').onchange = () => {
   $('curManualWrap').classList.toggle('hide', $('curSource').value !== 'manual');
 };
+
+// Predicted export cap: the checkbox takes over the G100 box (disabled, value
+// computed from voltage-rise headroom); unticking restores whatever was typed.
+function syncPredictExport() {
+  const on = $('predictExport').checked;
+  $('predictExportWrap').classList.toggle('hide', !on);
+  const box = $('exportLimitKw');
+  box.disabled = on;
+  if (!on) {
+    if (box.dataset.manual !== undefined) { box.value = box.dataset.manual; delete box.dataset.manual; }
+    return;
+  }
+  if (box.dataset.manual === undefined) box.dataset.manual = box.value;
+  const kw = predictedExportKw(Number($('sourceVolts').value), Number($('sourceOhms').value));
+  box.value = kw === null ? '' : kw.toFixed(2);
+}
+$('predictExport').onchange = syncPredictExport;
+$('sourceOhms').oninput = syncPredictExport;
+$('sourceVolts').oninput = syncPredictExport;
 
 // CSS cannot override <details open>, so force it open above the breakpoint
 const WIDE = () => window.innerWidth > 1000;

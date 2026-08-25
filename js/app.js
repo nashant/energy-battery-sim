@@ -200,7 +200,6 @@ function params() {
     totalImportLimitKw: num('totalImportLimitKw'),
     maxChargePrice: num('maxChargePrice'),
     cycle: $('cycle').value,
-    boundary: $('boundary').value,
     batteryCost: num('batteryCost'),
     inverterCost: num('inverterCost'),
     installCost: num('installCost'),
@@ -462,7 +461,7 @@ function render() {
     `${withBat.cycled.toFixed(0)} kWh/yr through the pack · mean ${withBat.meanThroughput.toFixed(1)} kWh/day ` +
     `(${withBat.utilisation.toFixed(0)}% of ${withBat.usableCap.toFixed(1)} kWh usable) · ` +
     `${(withBat.cycled / p.capacity).toFixed(0)} full-equivalent cycles/yr` +
-    (withBat.carried > 0.5 ? ` · ${withBat.carried.toFixed(0)} kWh carried across window boundaries` : '') +
+    (withBat.warmupDays ? ` · first ${withBat.warmupDays} days are forecast warm-up (cold start)` : '') +
     (p.exportLimitKw ? ` · max export ${(withBat.maxExportSlot * 2).toFixed(2)} kW vs ${p.exportLimitKw} kW G100 limit` : '');
 
   buildDayIndex();
@@ -640,6 +639,13 @@ function drawDayChart(slots) {
 
   const path = (vals, fn) => vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${fn(v).toFixed(1)}`).join('');
   const socPath = `M${x(0)},${B} ` + slots.map((s, i) => `L${x(i).toFixed(1)},${ys(s.soc).toFixed(1)}`).join(' ') + ` L${x(n - 1)},${B} Z`;
+  // Dashed planned-SOC line. In contiguous mode the plan credits a whole charge
+  // window's energy at its first slot, so this steps up at window start rather
+  // than ramping — a known display artefact of the plan, not a bug.
+  const planPts = slots.map((s, i) => s.plannedSoc === null || s.plannedSoc === undefined
+    ? null : `${x(i).toFixed(1)},${ys(Math.min(s.plannedSoc, cap)).toFixed(1)}`);
+  const planPath = planPts.some(Boolean)
+    ? 'M' + planPts.filter(Boolean).join(' L') : '';
   const bars = slots.map((s, i) => {
     const w = (R - L) / n - 1;
     if (s.chg > 1e-9) return `<rect x="${x(i) - w / 2}" y="${B}" width="${w}" height="${Math.min(28, s.chg * 9)}" fill="var(--acc)" opacity=".55"/>`;
@@ -651,6 +657,7 @@ function drawDayChart(slots) {
   $('dayChart').innerHTML = `
     <line x1="${L}" y1="${y(0)}" x2="${R}" y2="${y(0)}" stroke="var(--line)"/>
     <path d="${socPath}" fill="var(--batt)" opacity=".16"/>
+    ${planPath ? `<path d="${planPath}" fill="none" stroke="var(--batt)" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>` : ''}
     <path d="${path(exps, y)}" fill="none" stroke="var(--good)" stroke-width="1.6" opacity=".85"/>
     <path d="${path(imps, y)}" fill="none" stroke="var(--acc)" stroke-width="1.9"/>
     ${bars}

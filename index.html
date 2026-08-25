@@ -105,14 +105,6 @@
         <option value="contiguous" selected>Contiguous — one unbroken charge window</option>
         <option value="scattered">Scattered — charge in any cheapest slots</option>
       </select>
-      <label>Discharge by</label>
-      <select id="boundary">
-        <option value="cycle" selected>Next charge cycle (adaptive)</option>
-        <option value="midnight">End of day (local midnight)</option>
-        <option value="agile">End of Agile day (23:00–23:00)</option>
-      </select>
-      <div class="note">“Next charge cycle” keeps remaining charge until the battery next
-        charges, instead of dumping it at a fixed clock boundary.</div>
       <label>Only charge at or below (p/kWh) — optional</label>
       <input type="number" id="maxChargePrice" placeholder="no limit" step="0.1">
       <div class="note">Set 0 to charge only when prices are negative or free.</div>

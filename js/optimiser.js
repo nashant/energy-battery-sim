@@ -24,14 +24,14 @@ export function makeCfg(p) {
   };
 }
 
-function chargeInSlot(cfg, loadT) {
+export function chargeInSlot(cfg, loadT) {
   if (cfg.importCap === null) return cfg.slotIn;
   return Math.max(0, Math.min(cfg.slotIn, cfg.importCap - loadT));
 }
 
 // Marginal value of discharging, slots s..end, best first, per-slot cap applied.
 // Value of 1 kWh into load = the import price it avoids; into export = the export price.
-function dischargeBuckets(imp, exp, load, s, allowExport, cfg) {
+export function dischargeBuckets(imp, exp, load, s, allowExport, cfg) {
   const raw = [];
   for (let t = s; t < imp.length; t++) {
     const lq = Math.min(load[t], cfg.slotOut);
@@ -59,7 +59,7 @@ function dischargeBuckets(imp, exp, load, s, allowExport, cfg) {
 
 // Cumulative (qty, value) over ALL buckets, best first. Not truncated at value<=0:
 // under energy balance, charged energy must go somewhere even if that slot pays little.
-function cumAll(buckets) {
+export function cumAll(buckets) {
   const qs = [0], vs = [0];
   for (const b of buckets) {
     qs.push(qs[qs.length - 1] + b.qty);
@@ -69,7 +69,7 @@ function cumAll(buckets) {
 }
 
 // Value of discharging exactly E kWh, or null if the window cannot absorb E.
-function valueFor(cum, E) {
+export function valueFor(cum, E) {
   const { qs, vs } = cum;
   if (E <= 0) return 0;
   if (E > qs[qs.length - 1] + 1e-9) return null;
@@ -83,7 +83,7 @@ function valueFor(cum, E) {
   return vs[vs.length - 1];
 }
 
-function takeDischarge(buckets, E) {
+export function takeDischarge(buckets, E) {
   let left = E, got = 0;
   const alloc = new Map();
   for (const b of buckets) {

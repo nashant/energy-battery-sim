@@ -142,4 +142,100 @@ import { Forecaster, FORECAST_DEFAULTS } from '../js/causal.js';
 ok('forecaster dayType weekday', Forecaster.dayType('2025-08-04') === 'wd');
 ok('forecaster dayType weekend', Forecaster.dayType('2025-08-09') === 'we');
 
+import { solveHorizon } from '../js/causal.js';
+import { makeCfg } from '../js/optimiser.js';
+
+const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                      inverterKw: 20, totalImportLimitKw: null, maxChargePrice: null,
+                      exportLimitKw: null });
+
+// cheap->dear pairing, twice, no export. Slot 2 is 9p (not 10p) so the second
+// pair's source is deterministic — with a tie the greedy would put both kWh at slot 0.
+{
+  const p = solveHorizon(0, [10, 30, 9, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false);
+  ok('horizon pairs cheap->dear #1', close(p.chg.get(0) ?? 0, 1));
+  ok('horizon pairs cheap->dear #2', close(p.chg.get(2) ?? 0, 1));
+  ok('horizon discharges to load', close(p.discharge.get(1).load, 1));
+  ok('horizon no unprofitable charge', (p.chg.get(1) ?? 0) === 0);
+}
+// initial SOC spent at the best slot, no charging needed
+{
+  const p = solveHorizon(1, [30, 10], [0, 0], [1, 0], CFG, 'scattered', false);
+  ok('horizon spends soc0 at best value', close(p.discharge.get(0).load, 1));
+  ok('horizon soc0 needs no charge', p.chg.size === 0);
+  ok('horizon plannedSoc drains', close(p.plannedSoc[0], 0));
+}
+// full pack blocks charging until after discharge (headroom)
+{
+  const cfgSmall = makeCfg({ capacity: 1, roundTrip: 1, dischargeFloorPct: 0,
+                             inverterKw: 20, totalImportLimitKw: null,
+                             maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(1, [5, 30, 6, 31], [0, 0, 0, 0], [0, 1, 0, 1], cfgSmall, 'scattered', false);
+  // soc0 commits to slot 3 (val 31, best) first: minOver leaves nothing free for
+  // slot 1's pairing, and slot 0 has zero headroom while holding that soc0 — so
+  // slot 1 goes unserved by the battery.
+  ok('horizon respects cap headroom', close(p.discharge.get(3).load, 1));
+  ok('horizon blocked pair skipped', p.discharge.get(1) === undefined);
+}
+// energy-balance at the horizon: dear slot BEFORE cheap slot -> nothing to do
+{
+  const p = solveHorizon(0, [30, 10], [0, 0], [1, 0], CFG, 'scattered', false);
+  ok('horizon never charges for beyond-horizon', p.chg.size === 0 && p.discharge.size === 0);
+}
+// maxChargePrice filter
+{
+  const cfgMax = { ...CFG, maxChgP: 5 };
+  const p = solveHorizon(0, [10, 30], [0, 0], [0, 1], cfgMax, 'scattered', false);
+  ok('horizon honours maxChargePrice', p.chg.size === 0);
+}
+// export + net settlement: exp > imp still serves load first
+{
+  const cfgX = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 2, totalImportLimitKw: null, maxChargePrice: null,
+                         exportLimitKw: null });
+  const p = solveHorizon(0, [5, 20], [0, 25], [0, 0.5], cfgX, 'scattered', true);
+  const d = p.discharge.get(1);
+  ok('horizon net settlement load first', close(d.load, 0.5));
+  // slotOut = 1 kWh (2 kW): 0.5 to load, 0.5 to export
+  ok('horizon export with remainder', close(d.export, 0.5));
+}
+// round-trip efficiency prices the charge correctly: spread must beat 1/eff
+{
+  const cfgE = makeCfg({ capacity: 10, roundTrip: 0.5, dischargeFloorPct: 0,
+                         inverterKw: 20, totalImportLimitKw: null, maxChargePrice: null,
+                         exportLimitKw: null });
+  const pNo = solveHorizon(0, [10, 19], [0, 0], [0, 1], cfgE, 'scattered', false);
+  ok('horizon eff kills thin spread', pNo.chg.size === 0);   // 10/0.5=20 > 19
+  const pYes = solveHorizon(0, [10, 21], [0, 0], [0, 1], cfgE, 'scattered', false);
+  ok('horizon eff allows fat spread', close(pYes.chg.get(0), 2)); // 1 kWh out needs 2 in
+}
+// trajectory invariant: plannedSoc must stay within [0, cfg.cap] for every slot —
+// covers the cheap->dear pairing case, the cap-headroom case, and a reviewer
+// counterexample that would overfill a 1 kWh pack if pass-2's charge decay didn't
+// persist to the horizon end (addRange(...,c.t,T,q) must match commit()'s [b.t,T) decay)
+{
+  const cap1 = makeCfg({ capacity: 1, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 20, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const scenarios = [
+    { p: solveHorizon(0, [10, 30, 9, 30], [0, 0, 0, 0], [0, 1, 0, 1], CFG, 'scattered', false), cap: CFG.cap },
+    { p: solveHorizon(1, [5, 30, 6, 31], [0, 0, 0, 0], [0, 1, 0, 1], cap1, 'scattered', false), cap: cap1.cap },
+  ];
+  const pCounter = solveHorizon(0, [1, 40, 2, 30], [0, 0, 0, 0], [0, 1, 0, 2], cap1, 'scattered', false);
+  scenarios.push({ p: pCounter, cap: cap1.cap });
+  for (const { p, cap } of scenarios) {
+    let inBounds = true;
+    for (let t = 0; t < p.plannedSoc.length; t++) {
+      if (!(p.plannedSoc[t] >= -1e-9 && p.plannedSoc[t] <= cap + 1e-9)) inBounds = false;
+    }
+    ok('horizon plannedSoc stays within [0, cap]', inBounds);
+  }
+  // no single charge event may exceed the pack cap (this is what the bug broke: the
+  // buggy addRange(L,c.t,b.t,q) let slot 2 alone plan chg=2 into a 1 kWh/eff-1 pack
+  // because its headroom check read a not-yet-decayed L; the total across the whole
+  // plan, 2 kWh over two separate charge/discharge cycles, is legitimately > cap)
+  const maxChg = Math.max(...pCounter.chg.values());
+  ok('horizon counterexample single charge does not overfill 1 kWh pack', maxChg <= cap1.cap / cap1.eff + 1e-9);
+}
+
 process.exit(fail ? 1 : 0);

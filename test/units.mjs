@@ -238,4 +238,32 @@ const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
   ok('horizon counterexample single charge does not overfill 1 kWh pack', maxChg <= cap1.cap / cap1.eff + 1e-9);
 }
 
+// contiguous: one unbroken charge window, discharge after it. A 2 kW inverter
+// (1 kWh/slot) forces the window to genuinely span two slots.
+{
+  const cfgC = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
+                         inverterKw: 2, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(0, [10, 10, 30, 30], [0, 0, 0, 0], [0, 0, 1, 1], cfgC, 'contiguous', false);
+  ok('contig charges a window', close((p.chg.get(0) ?? 0) + (p.chg.get(1) ?? 0), 2));
+  ok('contig window is contiguous', p.window !== null && p.window[1] - p.window[0] === 1);
+  ok('contig discharges after', close(p.discharge.get(2).load + p.discharge.get(3).load, 2));
+}
+// contiguous window skips a cheap-dear-cheap split it would need scattered mode for
+{
+  const p = solveHorizon(0, [10, 40, 10, 30, 30], [0, 0, 0, 0, 0], [0, 0.2, 0, 1, 1],
+                         CFG, 'contiguous', false);
+  // one window only; the 40p slot never charges
+  ok('contig never charges the dear middle', (p.chg.get(1) ?? 0) === 0);
+}
+// contiguous respects held soc0 headroom
+{
+  const cfgSmall = makeCfg({ capacity: 2, roundTrip: 1, dischargeFloorPct: 0,
+                             inverterKw: 20, totalImportLimitKw: null,
+                             maxChargePrice: null, exportLimitKw: null });
+  const p = solveHorizon(1.5, [5, 30, 30], [0, 0, 0], [0, 1, 1], cfgSmall, 'contiguous', false);
+  // soc0 1.5 spent on the two 30p slots (pass 1); window at slot 0 has 0.5 headroom
+  ok('contig headroom-limited fill', close(p.chg.get(0) ?? 0, 0.5));
+}
+
 process.exit(fail ? 1 : 0);

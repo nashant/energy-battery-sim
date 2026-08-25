@@ -1,6 +1,6 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
-import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw } from './data.js';
+import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 
 const $ = (id) => document.getElementById(id);
@@ -659,5 +659,41 @@ function drawDayChart(slots) {
     <text x="4" y="${y(lo) + 4}" fill="var(--dim)" font-size="10">${lo.toFixed(0)}p</text>
     <text x="${L}" y="${H - 4}" fill="var(--dim)" font-size="10">${slots[0].hhmm}</text>
     <text x="${R - 30}" y="${H - 4}" fill="var(--dim)" font-size="10">${slots[n - 1].hhmm}</text>
-    <text x="${(L + R) / 2 - 40}" y="${H - 4}" fill="var(--dim)" font-size="10">bars = battery activity</text>`;
+    <text x="${(L + R) / 2 - 40}" y="${H - 4}" fill="var(--dim)" font-size="10">bars = battery activity</text>
+    <g id="hoverG" visibility="hidden" pointer-events="none">
+      <rect id="hoverLine" x="${L}" y="${T}" width="1.2" height="${B - T}" fill="var(--fg)" opacity=".8"/>
+      <rect id="hoverBg" x="0" y="${T}" width="86" height="40" rx="3" fill="var(--panel2, #000)" opacity=".85"/>
+      <text id="hoverTime" y="${T + 12}" fill="var(--fg)" font-size="10"></text>
+      <text id="hoverImp" y="${T + 24}" fill="var(--acc)" font-size="10"></text>
+      <text id="hoverExp" y="${T + 36}" fill="var(--good)" font-size="10"></text>
+    </g>`;
 }
+
+// Hover readout: vertical line + import/export price at the pointer's slot.
+// Listeners live on the SVG (kept across redraws); the group is per-draw, so
+// look it up each event. Snaps to slot centres, flips sides past halfway.
+$('dayChart').addEventListener('pointermove', (e) => {
+  const g = document.getElementById('hoverG');
+  const n = state.daySlots.length;
+  if (!g || !n) return;
+  const r = $('dayChart').getBoundingClientRect();
+  const i = slotAtX((e.clientX - r.left) * (480 / r.width), n);
+  const s = state.daySlots[i];
+  const cx = 40 + (420 / n) * (i + 0.5);
+  const left = cx <= 250;
+  document.getElementById('hoverLine').setAttribute('x', cx - 0.6);
+  const bg = document.getElementById('hoverBg');
+  bg.setAttribute('x', left ? cx + 4 : cx - 90);
+  for (const [id, text] of [['hoverTime', s.hhmm],
+                            ['hoverImp', `imp ${s.imp.toFixed(2)} p/kWh`],
+                            ['hoverExp', `exp ${s.exp.toFixed(2)} p/kWh`]]) {
+    const t = document.getElementById(id);
+    t.setAttribute('x', left ? cx + 9 : cx - 85);
+    t.textContent = text;
+  }
+  g.setAttribute('visibility', 'visible');
+});
+$('dayChart').addEventListener('pointerleave', () => {
+  const g = document.getElementById('hoverG');
+  if (g) g.setAttribute('visibility', 'hidden');
+});

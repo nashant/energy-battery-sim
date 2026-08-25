@@ -17,7 +17,7 @@ const direct = new Set([
 ]);
 const used = new Set([...direct, ...[...quoted].filter((q) => defined.has(q))]);
 // ids created at runtime by drawDayChart rather than declared in the HTML
-const RUNTIME_IDS = new Set(['cursor']);
+const RUNTIME_IDS = new Set(['cursor', 'hoverG', 'hoverLine', 'hoverBg', 'hoverTime', 'hoverImp', 'hoverExp']);
 
 let fail = 0;
 const missing = [...direct].filter((id) => !defined.has(id) && !RUNTIME_IDS.has(id));

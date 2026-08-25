@@ -80,4 +80,15 @@ ok('predict null on negative impedance', predictedExportKw(242, -0.1) === null);
 ok('predict null on null voltage', predictedExportKw(null, 0.25) === null);
 ok('predict null on zero voltage', predictedExportKw(0, 0.25) === null);
 
+import { slotAtX } from '../js/data.js';
+
+// slot i owns [L + i*w, L + (i+1)*w) in viewBox units, w = (R−L)/n; clamped at both ends
+ok('slotAtX left edge is slot 0', slotAtX(40, 48) === 0);
+ok('slotAtX left of plot clamps to 0', slotAtX(3, 48) === 0);
+ok('slotAtX right edge clamps to n−1', slotAtX(460, 48) === 47);
+ok('slotAtX beyond right clamps to n−1', slotAtX(479, 48) === 47);
+ok('slotAtX slot-10 centre', slotAtX(40 + (420 / 48) * 10.5, 48) === 10);
+ok('slotAtX DST short day', slotAtX(460 - 0.01, 46) === 45);
+ok('slotAtX null for empty day', slotAtX(200, 0) === null);
+
 process.exit(fail ? 1 : 0);

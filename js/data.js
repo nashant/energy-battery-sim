@@ -487,3 +487,10 @@ export function predictedExportKw(sourceV, sourceOhms, vMax = 253) {
   if (sourceV >= vMax) return 0;
   return vMax * (vMax - sourceV) / sourceOhms / 1000;
 }
+
+// Day-chart hit test: which slot owns viewBox x-coordinate sx. Slots tile
+// [L, R] evenly; out-of-plot coordinates clamp to the nearest end slot.
+export function slotAtX(sx, n, L = 40, R = 460) {
+  if (!n) return null;
+  return Math.max(0, Math.min(n - 1, Math.floor((sx - L) / ((R - L) / n))));
+}

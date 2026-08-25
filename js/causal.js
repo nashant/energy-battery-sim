@@ -137,7 +137,7 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
   const T = imp.length;
   // Remaining discharge opportunity from slot s: load already served in pass 1
   // must not be counted again (load-first netting), and per-slot output caps hold.
-  const bucketsFrom = (s) => dischargeBuckets(imp, exp, loadF, s, allowExport, cfg)
+  const build = (s) => dischargeBuckets(imp, exp, loadF, s, allowExport, cfg)
     .map((b) => {
       const committed = disRaw.get(b.t) || 0;
       const base = b.kind === 'load'
@@ -146,13 +146,23 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
       return { ...b, qty: Math.min(base, slotRem[b.t]) };
     })
     .filter((b) => b.qty > EPS);
+  // Memo, valid for the whole call: build() reads only imp/exp/loadF/cfg/disRaw/slotRem,
+  // and none of those are mutated between here and the window search's end. Without it
+  // the search rebuilt (and re-cumulated) the same O(T) bucket list inside an O(T²)
+  // double loop — O(T³ log T) for a 62-slot horizon, ~4.9s over a replayed year.
+  const memo = new Map();
+  const bucketsFrom = (s) => {
+    let m = memo.get(s);
+    if (!m) { const bk = build(s); m = { bk, cum: cumAll(bk) }; memo.set(s, m); }
+    return m;
+  };
   let best = null;
   for (let i = 0; i < T; i++) {
     for (let len = 1; len <= T - i; len++) {
       if (imp[i + len - 1] > cfg.maxChgP) break;
       const head = cfg.cap - maxOver(L, i, i + len);
       if (head <= EPS) continue;
-      const bk = bucketsFrom(i + len);
+      const { bk, cum } = bucketsFrom(i + len);
       const absorbable = bk.reduce((a, b) => a + b.qty, 0);
       // fill only what the remaining horizon can absorb — the energy-balance rule
       const target = Math.min(head, absorbable);
@@ -170,7 +180,7 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
       }
       const E = target - rem;
       if (E <= MARGIN) continue;
-      const gain = valueFor(cumAll(bk), E);
+      const gain = valueFor(cum, E);
       if (gain === null) continue;
       if (!best || gain - cost > best.profit + MARGIN) {
         best = { profit: gain - cost, w, E, s: i + len };
@@ -182,7 +192,7 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
   const packIn = best.E;
   const first = Math.min(...best.w.keys());
   addRange(L, first, T, packIn);              // must match takeDischarge's -q span [t, T) below
-  const { alloc } = takeDischarge(bucketsFrom(best.s), packIn);
+  const { alloc } = takeDischarge(bucketsFrom(best.s).bk, packIn);
   for (const [t, dd] of alloc) {
     const q = dd.load + dd.export;
     disRaw.set(t, (disRaw.get(t) || 0) + q);

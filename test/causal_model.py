@@ -280,7 +280,7 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
 def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_export):
     T = len(imp)
 
-    def buckets_from(s):
+    def build(s):
         out = []
         for b in discharge_buckets(imp, exp, load_f, s, allow_export, cfg):
             committed = dis_raw.get(b['t'], 0)
@@ -291,6 +291,18 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
             out.append(nb)
         return [b for b in out if b['qty'] > EPS]
 
+    # Memo, valid for the whole call: build() reads only imp/exp/load_f/cfg/dis_raw/
+    # slot_rem, and none of those are mutated between here and the window search's end.
+    # Without it the search rebuilt (and re-cumulated) the same O(T) bucket list inside
+    # an O(T^2) double loop.
+    memo = {}
+
+    def buckets_from(s):
+        if s not in memo:
+            bk = build(s)
+            memo[s] = (bk, cum_all(bk))
+        return memo[s]
+
     best = None
     for i in range(T):
         for length in range(1, T - i + 1):
@@ -299,7 +311,7 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
             head = cfg['cap'] - _max_over(L, i, i + length)
             if head <= EPS:
                 continue
-            bk = buckets_from(i + length)
+            bk, cum = buckets_from(i + length)
             absorbable = 0
             for b in bk:
                 absorbable = absorbable + b['qty']
@@ -320,7 +332,7 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
             E = target - rem
             if E <= MARGIN:
                 continue
-            gain = value_for(cum_all(bk), E)
+            gain = value_for(cum, E)
             if gain is None:
                 continue
             if best is None or gain - cost > best['profit'] + MARGIN:
@@ -332,7 +344,7 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
     pack_in = best['E']
     first = min(best['w'].keys())
     _add_range(L, first, T, pack_in)
-    alloc = take_discharge(buckets_from(best['s']), pack_in)['alloc']
+    alloc = take_discharge(buckets_from(best['s'])[0], pack_in)['alloc']
     for t, dd in alloc.items():
         q = dd['load'] + dd['export']
         dis_raw[t] = dis_raw.get(t, 0) + q

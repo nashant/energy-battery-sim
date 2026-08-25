@@ -91,4 +91,55 @@ ok('slotAtX slot-10 centre', slotAtX(40 + (420 / 48) * 10.5, 48) === 10);
 ok('slotAtX DST short day', slotAtX(460 - 0.01, 46) === 45);
 ok('slotAtX null for empty day', slotAtX(200, 0) === null);
 
+import { Forecaster, FORECAST_DEFAULTS } from '../js/causal.js';
+
+// cold start: zero forecast everywhere, ratio 1
+{
+  const f = new Forecaster();
+  ok('forecaster cold start is zero', f.base('wd', 17) === 0);
+  ok('forecaster cold ratio is 1', f.ratio() === 1);
+  ok('forecaster cold forecast zeros',
+     f.forecast([{ date: '2025-08-04', slotOfDay: 10 }], '2025-08-04')[0] === 0);
+}
+// seeding: first completed day IS the profile; EWMA thereafter
+{
+  const f = new Forecaster();
+  const day = new Array(48).fill(0.5);
+  f.completeDay('2025-08-04', day);                       // Monday -> wd seed
+  ok('forecaster seeds first wd day', close(f.base('wd', 3), 0.5));
+  ok('forecaster we falls back to wd', close(f.base('we', 3), 0.5));
+  const day2 = new Array(48).fill(1.0);
+  f.completeDay('2025-08-05', day2);                      // Tuesday -> EWMA
+  ok('forecaster EWMA update', close(f.base('wd', 3), 0.15 * 1.0 + 0.85 * 0.5));
+  const sat = new Array(48).fill(2.0);
+  f.completeDay('2025-08-09', sat);                       // Saturday -> we seed
+  ok('forecaster we seeds independently', close(f.base('we', 3), 2.0));
+  ok('forecaster wd untouched by we day', close(f.base('wd', 3), 0.575));
+}
+// DST: null entries keep old profile value
+{
+  const f = new Forecaster();
+  f.completeDay('2025-08-04', new Array(48).fill(1.0));
+  const short = new Array(48).fill(0.4); short[2] = null;
+  f.completeDay('2025-08-05', short);
+  ok('forecaster null slot keeps old value', close(f.base('wd', 2), 1.0));
+  ok('forecaster non-null slot updates', close(f.base('wd', 3), 0.15 * 0.4 + 0.85 * 1.0));
+}
+// intra-day ratio: dampened, ramping, never crossing day boundary
+{
+  const f = new Forecaster();
+  f.completeDay('2025-08-04', new Array(48).fill(1.0));
+  for (let s = 0; s < 8; s++) f.settle('2025-08-05', s, 2.0);   // running 2x profile
+  // r=2, lambda = 0.75 * min(1, 8/16) = 0.375 -> ratio = 1 + 0.375*(2-1)
+  ok('forecaster ratio ramps', close(f.ratio(), 1.375));
+  const fc = f.forecast([{ date: '2025-08-05', slotOfDay: 20 },
+                         { date: '2025-08-06', slotOfDay: 20 }], '2025-08-05');
+  ok('forecaster ratio applies today', close(fc[0], 1.375));
+  ok('forecaster ratio not tomorrow', close(fc[1], 1.0));
+  f.completeDay('2025-08-05', new Array(48).fill(2.0));
+  ok('forecaster ratio resets on day complete', f.ratio() === 1);
+}
+ok('forecaster dayType weekday', Forecaster.dayType('2025-08-04') === 'wd');
+ok('forecaster dayType weekend', Forecaster.dayType('2025-08-09') === 'we');
+
 process.exit(fail ? 1 : 0);

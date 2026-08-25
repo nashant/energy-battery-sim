@@ -1,6 +1,7 @@
 // Animated power-flow diagram: Grid, House, Battery, with three edges.
-// Charge and discharge never occur in the same slot (one cycle per day), so the
-// Grid<->Battery edge can carry both directions on one path without ambiguity.
+// Charge and discharge never occur in the same slot — the planner's one-meter XOR rule
+// (solveHorizon in js/causal.js) refuses to book import and export in one half-hour — so
+// the Grid<->Battery edge can carry both directions on one path without ambiguity.
 
 const NODES = {
   grid: { x: 90, y: 190, label: 'Grid' },

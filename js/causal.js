@@ -80,6 +80,8 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
   };
 
   // Pass 1: spend the energy already in the pack on the best-value slots anywhere.
+  // It only ever discharges, and it runs first, so the slots it commits are the ones
+  // pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
   for (const b of buckets) {
     if (b.val <= MARGIN) break;               // worthless: hold instead (beyond-horizon rule)
     const q = Math.min(b.qty, slotRem[b.t], minOver(L, b.t, T));
@@ -99,10 +101,14 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
     cand.sort((a, b) => a.cost - b.cost || a.t - b.t);
     for (const b of buckets) {
       if (b.qty <= EPS || b.val <= MARGIN) continue;
+      // One-meter rule: a slot is either importing or exporting, never both. Both maps
+      // grow as pairs commit, so the tests are made here, at pair-commit time.
+      if ((chg.get(b.t) || 0) > EPS) continue;          // this slot already charges
       for (const c of cand) {
         if (b.qty <= EPS) break;
         if (b.val <= c.cost + MARGIN) break;  // cand sorted: nothing cheaper left
         if (c.room <= EPS || c.t >= b.t) continue;
+        if ((disRaw.get(c.t) || 0) > EPS) continue;      // this slot already discharges
         const head = cfg.cap - maxOver(L, c.t, b.t);
         const q = Math.min(b.qty, slotRem[b.t], c.room * cfg.eff, head);
         if (q <= EPS) continue;
@@ -154,7 +160,9 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
       let rem = target, cost = 0;
       const w = new Map();
       for (let t = i; t < i + len; t++) {
-        const add = Math.min(chargeInSlot(cfg, loadF[t]) * cfg.eff, rem);
+        // One-meter rule: a slot pass 1 already discharges cannot also import.
+        const add = (disRaw.get(t) || 0) > EPS
+          ? 0 : Math.min(chargeInSlot(cfg, loadF[t]) * cfg.eff, rem);
         if (add <= EPS) continue;
         cost += (add / cfg.eff) * imp[t];
         w.set(t, add / cfg.eff);

@@ -26,6 +26,11 @@ for (const c of cases) {
   });
   ok(`parity ${c.meta.name} (worst ${worst.toExponential(1)})`, worst <= 1e-9);
   ok(`parity ${c.meta.name} replans`, replans === c.expected.replans);
+  // The committed reference itself must obey the one-meter rule: parity alone can't
+  // catch a shared bug, so assert it on the Python-generated expectations directly.
+  const bothWays = c.expected.slots.filter((e) => e.cin > 1e-9 && e.dx > 1e-9).length;
+  ok(`one-meter ${c.meta.name}: reference never charges and exports in one slot`,
+     bothWays === 0);
 
   // causality: everything at/after the cut is garbage — prices inverted to absurd
   // values and load quadrupled. Nothing decided before the reveal may notice.

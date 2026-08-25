@@ -59,4 +59,18 @@ ok('replay contiguous clean', rc.socViolations === 0 && rc.energy < n.energy - 1
 const rm = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, maxChargePrice: 13 } });
 ok('replay maxChgP honoured', rm.slots.every((s) => s.chg <= 1e-9 || s.imp <= 13));
 
+// One-meter rule: a half-hour is either importing or exporting, never both. The nasty
+// case is export priced ABOVE import, which makes buy-and-immediately-resell look free
+// money to a greedy pairer. Parity fixtures can't catch this — both languages would
+// share the bug faithfully — so it lives here as a permanent invariant.
+const expHigh = imp.map((v) => v * 1.25);
+for (const cycle of ['scattered', 'contiguous']) {
+  const rx = runSim({ usage, load, imp, exp: expHigh, scTotalP: 0, params: { ...P, cycle } });
+  const both = rx.slots.filter((s) => s.gridImp > 1e-9 && s.gridExp > 1e-9);
+  ok(`one-meter rule: no slot both imports and exports (${cycle})` +
+     (both.length ? ` (${both.length} slots, first ${both[0].wall})` : ''), both.length === 0);
+  ok(`one-meter run still clean (${cycle})`, rx.socViolations === 0 &&
+     rx.slots.length === DAYS * 48 && rx.slots.every((s) => Number.isFinite(s.soc)));
+}
+
 process.exit(fail ? 1 : 0);

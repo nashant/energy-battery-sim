@@ -223,6 +223,8 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
         b['qty'] -= q
 
     # Pass 1: spend the energy already in the pack on the best-value slots anywhere.
+    # It only ever discharges, and it runs first, so the slots it commits are the ones
+    # pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
     for b in buckets:
         if b['val'] <= MARGIN:
             break
@@ -243,6 +245,10 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
         for b in buckets:
             if b['qty'] <= EPS or b['val'] <= MARGIN:
                 continue
+            # One-meter rule: a slot is either importing or exporting, never both. Both
+            # dicts grow as pairs commit, so the tests are made here, at pair-commit time.
+            if chg.get(b['t'], 0) > EPS:
+                continue                           # this slot already charges
             for c in cand:
                 if b['qty'] <= EPS:
                     break
@@ -250,6 +256,8 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
                     break                          # cand sorted: nothing cheaper left
                 if c['room'] <= EPS or c['t'] >= b['t']:
                     continue
+                if dis_raw.get(c['t'], 0) > EPS:
+                    continue                       # this slot already discharges
                 head = cfg['cap'] - _max_over(L, c['t'], b['t'])
                 q = min(b['qty'], slot_rem[b['t']], c['room'] * cfg['eff'], head)
                 if q <= EPS:
@@ -301,7 +309,9 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
             rem, cost = target, 0
             w = {}
             for t in range(i, i + length):
-                add = min(charge_in_slot(cfg, load_f[t]) * cfg['eff'], rem)
+                # One-meter rule: a slot pass 1 already discharges cannot also import.
+                add = (0 if dis_raw.get(t, 0) > EPS
+                       else min(charge_in_slot(cfg, load_f[t]) * cfg['eff'], rem))
                 if add <= EPS:
                     continue
                 cost += (add / cfg['eff']) * imp[t]
@@ -425,8 +435,9 @@ if __name__ == '__main__':
     # Self-check: run the three fixture cases and print totals.
     from gen_causal_fixtures import CASES, BASE, synth
 
-    for name, extra in CASES:
+    for name, extra, exp_mul in CASES:
         usage, load, imp, exp = synth(35, seed=42)
+        exp = [round(v * exp_mul, 4) for v in exp]
         params = {**BASE, **extra}
         slots, replans, warmup = run_replay(usage, load, imp, exp, make_cfg(params), params)
         cin = sum(s['cin'] for s in slots)

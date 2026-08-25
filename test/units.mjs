@@ -265,5 +265,26 @@ const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
   // soc0 1.5 spent on the two 30p slots (pass 1); window at slot 0 has 0.5 headroom
   ok('contig headroom-limited fill', close(p.chg.get(0) ?? 0, 0.5));
 }
+// one-meter rule at the planner level: a slot either imports or exports, never both.
+// Flat 12p import against a flat 15p export makes buy-and-resell inside one half-hour
+// look like free money, which is exactly what a greedy pairer will book if unguarded.
+{
+  const cfgM = makeCfg({ capacity: 10, roundTrip: 0.9, dischargeFloorPct: 10,
+                         inverterKw: 5, totalImportLimitKw: null,
+                         maxChargePrice: null, exportLimitKw: null });
+  const T = 12;
+  const impF = new Array(T).fill(12), expF = new Array(T).fill(15), ldF = new Array(T).fill(0.3);
+  for (const mode of ['scattered', 'contiguous']) {
+    const p = solveHorizon(5, impF, expF, ldF, cfgM, mode, true);
+    const both = [...p.chg.keys()].filter((t) => p.chg.get(t) > 1e-9 && p.discharge.has(t) &&
+      p.discharge.get(t).load + p.discharge.get(t).export > 1e-9);
+    ok(`horizon charge XOR discharge per slot (${mode})`, both.length === 0);
+  }
+  // pass 1 spends soc0 = 5 (usable cap 9, slotOut 2.5) over slots 0,1,2 as 2.5/2.5 pack-side
+  // minus in-slot load netting, leaving slot 2 partly committed — so the contiguous window
+  // can only start at slot 3, not slot 2.
+  const pc = solveHorizon(5, impF, expF, ldF, cfgM, 'contiguous', true);
+  ok('contig window starts after pass-1 discharge', pc.window !== null && pc.window[0] === 3);
+}
 
 process.exit(fail ? 1 : 0);

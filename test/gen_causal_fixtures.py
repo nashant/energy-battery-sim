@@ -37,18 +37,24 @@ def synth(days, seed):
     return {'wall': wall, 'localFloat': lf}, load, imp, exp
 
 
+# (name, params, export-price multiplier). expMul > 1/0.6 lifts export ABOVE import,
+# which is the regime where a greedy pairer wants to import and export in the SAME slot;
+# the planner's one-meter XOR rule forbids it, so parity has to cover that branch too.
 CASES = [
-    ('scattered-export',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None)),
-    ('contig-noexport',   dict(cycle='contiguous', allowExport=False, exportLimitKw=None, maxChargePrice=None)),
-    ('scattered-capped',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=20.0)),
+    ('scattered-export',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None), 1.0),
+    ('contig-noexport',   dict(cycle='contiguous', allowExport=False, exportLimitKw=None, maxChargePrice=None), 1.0),
+    ('scattered-capped',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=20.0), 1.0),
+    ('scattered-exphigh', dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None), 2.2),
+    ('contig-exphigh',    dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None), 2.2),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)
 
 if __name__ == '__main__':
     out = []
-    for name, extra in CASES:
+    for name, extra, exp_mul in CASES:
         usage, load, imp, exp = synth(35, seed=42)
+        exp = [round(v * exp_mul, 4) for v in exp]
         params = {**BASE, **extra}
         slots, replans, warmup = run_replay(usage, load, imp, exp, make_cfg(params), params)
         out.append({'meta': {'name': name}, 'usage': usage, 'load': load, 'imp': imp,

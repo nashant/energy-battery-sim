@@ -53,14 +53,23 @@ Two cycle rules: **scattered** charges in any set of slots before discharging be
 
 ## Correctness
 
-The optimiser is a port of `solve_day()` in `agile_battery_sim.py`. Greedy marginal pairing
-is provably optimal here despite the shared per-slot discharge cap — the per-slot feasible
-set is a polymatroid, so the exchange argument holds. That was checked against an exact LP
-(HiGHS) over 48 stratified real days and 400 randomised synthetic days: worst gap 0.0000p.
+The optimiser is `solveHorizon` in `js/causal.js`: a greedy planner over the published
+price horizon. It first spends whatever is already in the pack on the best-valued slots,
+then books cheap-charge → dear-discharge pairs in order of spread, each one checked
+against the SOC trajectory so no plan can overfill or overdraw the pack. It is a heuristic
+by design, not a claim of optimality — the constraint that matters is causality, not the
+last fraction of a penny: no plan may use a price before its publication time or a load
+before it happens. Two things hold that honest. The planner is mirrored line-for-line in
+Python and the two must agree bit-exactly on committed fixtures, so neither language can
+drift silently. And a causality guard replaces every price and load after a cut point with
+garbage, then asserts that every decision taken before that data would have been published
+is bit-identical — mechanically proving no hindsight leaks in. Physics invariants (the
+one-meter rule, SOC bounds, inverter and G100 caps, the max-charge-price filter) are
+asserted separately, at both the planner and the whole-replay level.
 
 ```sh
 node test/units.mjs      # pure helpers (js/data.js) — no network, no DOM
-node test/replay.mjs     # offline invariants on a synthetic no-DST year
+node test/replay.mjs     # offline invariants: synthetic year + 46/50-slot DST days
 node test/causal.mjs     # JS vs Python parity on fixtures, + causality guard
 node test/dom.mjs        # index.html/app.js id cross-check + FlowDiagram DOM stub
 node test/e2e.mjs        # whole-year totals via the live Octopus API

@@ -642,10 +642,17 @@ function drawDayChart(slots) {
   // Dashed planned-SOC line. In contiguous mode the plan credits a whole charge
   // window's energy at its first slot, so this steps up at window start rather
   // than ramping — a known display artefact of the plan, not a bug.
-  const planPts = slots.map((s, i) => s.plannedSoc === null || s.plannedSoc === undefined
+  // A slot outside any plan's coverage has no planned SOC; the dashed line must break
+  // there rather than draw a straight segment across the gap, so each run of covered
+  // slots starts a fresh subpath with M.
+  const planPts = slots.map((s, i) => !Number.isFinite(s.plannedSoc)
     ? null : `${x(i).toFixed(1)},${ys(Math.min(s.plannedSoc, cap)).toFixed(1)}`);
-  const planPath = planPts.some(Boolean)
-    ? 'M' + planPts.filter(Boolean).join(' L') : '';
+  let planPath = '', penDown = false;
+  for (const p of planPts) {
+    if (p === null) { penDown = false; continue; }
+    planPath += `${penDown ? ' L' : (planPath ? ' M' : 'M')}${p}`;
+    penDown = true;
+  }
   const bars = slots.map((s, i) => {
     const w = (R - L) / n - 1;
     if (s.chg > 1e-9) return `<rect x="${x(i) - w / 2}" y="${B}" width="${w}" height="${Math.min(28, s.chg * 9)}" fill="var(--acc)" opacity=".55"/>`;

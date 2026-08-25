@@ -1,4 +1,5 @@
-// Offline invariants on a synthetic no-DST year. No network, no CSV.
+// Offline invariants: a synthetic no-DST year, plus a short run carrying real 46- and
+// 50-slot DST days. No network, no CSV.
 import { runSim } from '../js/data.js';
 
 let fail = 0;
@@ -43,7 +44,8 @@ ok('replay no-battery baseline matches', Math.abs(n.energy - n.baseline) < 1e-6)
 ok('replay reports warmup', r.warmupDays === 14);
 ok('replay replans daily-ish', r.replans >= DAYS - 1 && r.replans <= DAYS * 3);
 ok('replay carried is gone', !('carried' in r));
-ok('replay plannedSoc present late', r.slots[DAYS * 48 - 10].plannedSoc !== null);
+ok('replay plannedSoc present late',
+   Number.isFinite(r.slots[DAYS * 48 - 10].plannedSoc));
 // causal cold start: with export disabled and no load forecast yet, day 1 has
 // nothing to optimise — no charging, no discharge. (With export enabled, day-1
 // arbitrage IS expected, and execution nets planned export to actual load first,
@@ -71,6 +73,50 @@ for (const cycle of ['scattered', 'contiguous']) {
      (both.length ? ` (${both.length} slots, first ${both[0].wall})` : ''), both.length === 0);
   ok(`one-meter run still clean (${cycle})`, rx.socViolations === 0 &&
      rx.slots.length === DAYS * 48 && rx.slots.every((s) => Number.isFinite(s.soc)));
+}
+
+// DST days: the clocks-forward day is 46 slots (01:00-02:00 never happens) and the
+// clocks-back day is 50 (01:00-02:00 happens twice). Both land on the same slotOfDay
+// index, so the repeated hour exercises dayBuf's averaging branch.
+{
+  const HHMM = [];
+  for (let h = 0; h < 24; h++) for (const m of ['00', '30']) HHMM.push(`${String(h).padStart(2, '0')}:${m}`);
+  const SKIP = HHMM.filter((t) => t !== '01:00' && t !== '01:30');                  // 46
+  const REPEAT = [...HHMM.slice(0, 4), ...HHMM.slice(2, 4), ...HHMM.slice(4)];      // 50
+  const DAYS_DST = [
+    ['2025-03-28', HHMM], ['2025-03-29', HHMM], ['2025-03-30', SKIP], ['2025-03-31', HHMM],
+    ['2025-10-24', HHMM], ['2025-10-25', HHMM], ['2025-10-26', REPEAT], ['2025-10-27', HHMM],
+  ];
+  const wall = [], localFloat = [], kwh = [];
+  for (const [date, times] of DAYS_DST) {
+    for (const t of times) {
+      const w = `${date}T${t}`;
+      wall.push(w);
+      localFloat.push(Date.parse(`${w}:00Z`));       // wall clock read as UTC, offset-free
+      const hh = Number(t.slice(0, 2));
+      kwh.push(0.2 + (hh >= 17 && hh < 21 ? 0.6 : 0));
+    }
+  }
+  const uD = { wall, localFloat, kwh, utc: wall };
+  const lD = kwh.slice();
+  const iD = lD.map((_, i) => (Number(wall[i].slice(11, 13)) < 6 ? 12 : 24));
+  const eD = iD.map((v) => v * 0.6);
+  const expect = 46 + 50 + 6 * 48;
+  ok('DST synthetic has a 46- and a 50-slot day', wall.length === expect &&
+     SKIP.length === 46 && REPEAT.length === 50);
+  for (const cycle of ['scattered', 'contiguous']) {
+    const rd = runSim({ usage: uD, load: lD, imp: iD, exp: eD, scTotalP: 0,
+                        params: { ...P, cycle } });
+    ok(`DST replay preserves slot count (${cycle})`,
+       rd.slots.length === expect && rd.slots.every(Boolean));
+    ok(`DST replay has no SOC violations (${cycle})`, rd.socViolations === 0);
+    ok(`DST replay soc is finite everywhere (${cycle})`,
+       rd.slots.every((s) => Number.isFinite(s.soc) && Number.isFinite(s.socPct)));
+    ok(`DST replay plannedSoc never NaN (${cycle})`,
+       rd.slots.every((s) => s.plannedSoc === null || Number.isFinite(s.plannedSoc)));
+    ok(`DST replay totals are finite (${cycle})`,
+       Number.isFinite(rd.energy) && Number.isFinite(rd.baseline) && Number.isFinite(rd.cycled));
+  }
 }
 
 process.exit(fail ? 1 : 0);

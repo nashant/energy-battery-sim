@@ -131,7 +131,8 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
            window: ts.length ? [Math.min(...ts), Math.max(...ts)] : null };
 }
 
-// Contiguous mode: one unbroken charge window per plan, discharge strictly after it —
+// Contiguous mode: one charge window per plan (pass-1 discharge slots inside it are
+// skipped, so the fill can have holes), discharge strictly after it —
 // the same shape solveDay's contiguous branch had, made soc0/trajectory-aware.
 function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExport) {
   const T = imp.length;

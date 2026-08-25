@@ -48,7 +48,8 @@ the code uses ES modules.
 - Consumption is assumed unchanged by the tariff switch.
 
 Two cycle rules: **scattered** charges in any set of slots before discharging begins;
-**contiguous** charges at full power across one unbroken window. The engine defaults to
+**contiguous** charges at full power across a single window (slots already committed
+to discharge are skipped inside it). The engine defaults to
 **contiguous** when the cycle mode isn't specified.
 
 ## Correctness
@@ -63,9 +64,9 @@ before it happens. Two things hold that honest. The planner is mirrored line-for
 Python and the two must agree bit-exactly on committed fixtures, so neither language can
 drift silently. And a causality guard replaces every price and load after a cut point with
 garbage, then asserts that every decision taken before that data would have been published
-is bit-identical — mechanically proving no hindsight leaks in. Physics invariants (the
-one-meter rule, SOC bounds, inverter and G100 caps, the max-charge-price filter) are
-asserted separately, at both the planner and the whole-replay level.
+is bit-identical — mechanically proving no hindsight leaks in. Physics invariants are asserted
+separately: the one-meter rule, SOC bounds and the max-charge-price filter at both the
+planner and whole-replay level; the inverter cap at the planner level.
 
 ```sh
 node test/units.mjs      # pure helpers (js/data.js) — no network, no DOM

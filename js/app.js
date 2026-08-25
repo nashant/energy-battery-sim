@@ -1,6 +1,6 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
-import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
+import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 
 const $ = (id) => document.getElementById(id);
@@ -415,6 +415,10 @@ function render() {
     : save) * annual;
   const pbBatt = paybackYears(cost, withBat.savedVsNoBattery * annual, p.escPct);
   const pbCur = paybackYears(invest, pbSave, p.escPct);
+  // year-1 simple return; escalation grows it in later years, so this is the floor
+  const roiCur = roiPct(invest, pbSave);
+  const roiBatt = roiPct(cost, withBat.savedVsNoBattery * annual);
+  const fmtRoi = (r) => r === null ? '' : ` · ${r.toFixed(1)}%/yr`;
   $('cards').innerHTML = `
     ${card('Current tariff', gbp(cur.total), cur.source === 'manual'
       ? `manual · ${cur.impliedRate.toFixed(2)} p/kWh + ${(p.curScPerDay || 0).toFixed(2)} p/day`
@@ -423,12 +427,12 @@ function render() {
     ${card('With battery', gbp(withBat.total), `energy ${gbp(withBat.energy)} + standing ${gbp(withBat.sc)}`)}
     ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery`,
            save >= 0 ? 'pos' : 'neg')}
-    ${invest > 0 ? card('Payback', fmtYears(pbCur), [
+    ${invest > 0 ? card('Payback', fmtYears(pbCur) + fmtRoi(roiCur), [
       (hpCost > 0 ? `${gbp(cost)} battery + ${gbp(hpCost)} heat pump` : gbp(invest)) +
         ` ÷ ${gbp(pbSave)}/yr vs your current setup`,
       ...(gasBill > 0 ? [`incl. ${gbp(gasBill * annual)}/yr gas bill removed`] : []),
-      ...(p.escPct > 0 ? [`prices rising ${p.escPct}%/yr`] : []),
-      ...(pbBatt !== null ? [`${fmtYears(pbBatt)} counting only what the battery adds`] : []),
+      ...(p.escPct > 0 ? [`prices rising ${p.escPct}%/yr — ROI is the year-1 floor`] : []),
+      ...(pbBatt !== null ? [`${fmtYears(pbBatt)}${fmtRoi(roiBatt)} counting only what the battery adds`] : []),
     ].join(' · ')) : ''}
   `;
 

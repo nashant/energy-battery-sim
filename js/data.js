@@ -412,3 +412,11 @@ export function slotAtX(sx, n, L = 40, R = 460) {
   if (!n) return null;
   return Math.max(0, Math.min(n - 1, Math.floor((sx - L) / ((R - L) / n))));
 }
+
+// Simple year-1 return on the outlay: annual saving over capex, as %/yr.
+// The reciprocal of unescalated payback — comparable to an interest rate.
+// Negative savings report a negative return rather than hiding it.
+export function roiPct(cost, savePerYear) {
+  if (!(cost > 0) || !Number.isFinite(savePerYear)) return null;
+  return savePerYear / cost * 100;
+}

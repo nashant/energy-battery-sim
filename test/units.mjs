@@ -287,4 +287,14 @@ const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
   ok('contig window starts after pass-1 discharge', pc.window !== null && pc.window[0] === 3);
 }
 
+import { roiPct } from '../js/data.js';
+
+// simple year-1 return: annual saving over capex, as %/yr — reciprocal of unescalated payback
+ok('roi 1012/yr on 3500 is 28.9%', close(roiPct(3500, 1012), 1012 / 3500 * 100));
+ok('roi is reciprocal of simple payback', close(roiPct(3500, 1012), 100 / paybackYears(3500, 1012, 0)));
+ok('roi negative saving reported honestly', close(roiPct(3500, -70), -2));
+ok('roi null on zero cost', roiPct(0, 1000) === null);
+ok('roi null on negative cost', roiPct(-1, 1000) === null);
+ok('roi null on non-finite saving', roiPct(3500, NaN) === null);
+
 process.exit(fail ? 1 : 0);

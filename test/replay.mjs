@@ -42,7 +42,8 @@ ok('replay has no SOC violations', r.socViolations === 0);
 ok('replay saves money', r.energy < n.energy - 1);
 ok('replay no-battery baseline matches', Math.abs(n.energy - n.baseline) < 1e-6);
 ok('replay reports warmup', r.warmupDays === 14);
-ok('replay replans daily-ish', r.replans >= DAYS - 1 && r.replans <= DAYS * 3);
+// receding horizon: one plan at start, then a fresh plan at the start of every slot
+ok('replay replans every slot', r.replans === DAYS * 48);
 ok('replay carried is gone', !('carried' in r));
 ok('replay plannedSoc present late',
    Number.isFinite(r.slots[DAYS * 48 - 10].plannedSoc));
@@ -73,6 +74,25 @@ for (const cycle of ['scattered', 'contiguous']) {
      (both.length ? ` (${both.length} slots, first ${both[0].wall})` : ''), both.length === 0);
   ok(`one-meter run still clean (${cycle})`, rx.socViolations === 0 &&
      rx.slots.length === DAYS * 48 && rx.slots.every((s) => Number.isFinite(s.soc)));
+}
+
+// Self-use load-following: execution covers ACTUAL load beyond the plan when the pack
+// has energy and the slot price beats the plan's marginal refill cost. The forecast
+// cannot know about a one-off spike, so only load-following can cover it.
+{
+  const spikeLoad = load.slice();
+  const spikeAt = 20 * 48 + 35;                       // day 21, 17:30 — a 38p peak slot
+  spikeLoad[spikeAt] = 2.0;                           // one-off spike, ~10x the profile
+  const rs = runSim({ usage, load: spikeLoad, imp, exp, scTotalP: 0,
+                      params: { ...P, allowExport: false } });
+  // scheduled-setpoint alone caps at the forecast (~1.0 here); following covers it all
+  ok('load-following covers an unforecast spike',
+     rs.slots[spikeAt].disLoad > 1.5);
+  ok('load-following run stays clean', rs.socViolations === 0);
+  // price floor: covering load costs a refill at >= cheapest charge price (12p) / eff,
+  // so no slot may discharge to load at or below that — planned or opportunistic.
+  ok('load-following never discharges below refill cost',
+     rs.slots.every((s) => s.disLoad <= 1e-9 || s.imp > 12 / P.roundTrip));
 }
 
 // DST days: the clocks-forward day is 46 slots (01:00-02:00 never happens) and the

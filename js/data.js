@@ -189,9 +189,10 @@ const slotOfDay = (wall) => {
 };
 
 // The causal loop: plan on what was knowable, execute against what actually happened.
-// A plan is made at the start of the run and re-made at each price publication; between
-// publications the standing plan is executed slot by slot against ACTUAL load, so the
-// battery follows it only as far as reality allows. Exported for tests and fixtures.
+// A plan is made at the start of the run and re-made at the start of every slot (receding
+// horizon) from the current SOC and the latest forecast; the 16:00 publication extends the
+// horizon to the next tariff-day. Each slot executes the plan's first step against ACTUAL
+// load, so the battery follows it only as far as reality allows. Exported for tests.
 export function runReplay(usage, load, imp, exp, cfg, params) {
   const T = load.length;
   const mode = params.cycle || 'contiguous';
@@ -205,7 +206,7 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
   const fc = new Forecaster();
   const slots = new Array(T);
   let soc = 0, replans = 0;
-  let plan = null, planStart = 0;                       // plan covers [planStart, horizon)
+  let plan = null, planStart = 0, planMaxChgP = 0;      // plan covers [planStart, horizon)
   let horizon = dayEnd.get(agileKey[0]);
   let dayBuf = new Array(48).fill(null);                // actuals by slotOfDay
 
@@ -215,13 +216,19 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     const loadF = fc.forecast(entries, calKey[i]);
     plan = solveHorizon(soc, imp.slice(i, h), exp.slice(i, h), loadF, cfg, mode, allowExport);
     planStart = i; horizon = h; replans++;
+    // marginal refill price: the dearest slot the plan charges in. A plan that books no
+    // charging (pack already full for its horizon) keeps the last booked price, so
+    // load-following never treats the pack's energy as free.
+    let m = 0;
+    for (const t of plan.chg.keys()) m = Math.max(m, imp[i + t]);
+    if (m > 0) planMaxChgP = m;
   };
 
   if (params.useBattery !== false) replanAt(0, horizon);
 
   for (let i = 0; i < T; i++) {
     // publication: first slot of each calendar day at/after 16:00 extends the horizon
-    // to the end of the NEXT tariff-day; the new plan takes effect from the NEXT slot.
+    // to the end of the NEXT tariff-day from the NEXT slot's plan onward.
     const publishes = params.useBattery !== false &&
       usage.wall[i].slice(11, 16) >= PUBLISH_HHMM &&
       (i === 0 || usage.wall[i - 1].slice(11, 16) < PUBLISH_HHMM ||
@@ -241,6 +248,14 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
       }
       plannedSoc = plan.plannedSoc[n] + cfg.reserve;
     }
+    // Self-use load-following: between planned actions the inverter covers the slot's
+    // ACTUAL load from the pack — but only when the avoided import price beats the
+    // plan's marginal refill cost (dearest planned charge, pack-side), and never while
+    // charging (the battery can't do both). An empty pack makes this a no-op.
+    if (cin <= 1e-12 && imp[i] > planMaxChgP / cfg.eff + 1e-9) {
+      const extra = Math.min(load[i] - dl, soc - dl - dx, cfg.slotOut - dl - dx);
+      if (extra > 1e-12) dl += extra;
+    }
     soc += cin * cfg.eff - dl - dx;
 
     slots[i] = { i, cin, dl, dx, soc, plannedSoc };
@@ -252,9 +267,16 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     const dayDone = i + 1 === T || calKey[i + 1] !== calKey[i];
     if (dayDone) { fc.completeDay(calKey[i], dayBuf); dayBuf = new Array(48).fill(null); }
 
-    if (publishes) {
-      const next = dayEnd.get(agileKey[Math.min(dayEnd.get(agileKey[i]), T - 1)]) ?? T;
-      replanAt(Math.min(i + 1, T - 1), Math.max(next, dayEnd.get(agileKey[i])));
+    // Receding horizon: re-plan at the start of every slot from the current SOC and the
+    // forecast as it now stands. Publication extends the horizon to the end of the NEXT
+    // tariff-day; otherwise the standing horizon (prices already published) is kept.
+    if (params.useBattery !== false && i + 1 < T) {
+      let h = horizon;
+      if (publishes) {
+        const next = dayEnd.get(agileKey[Math.min(dayEnd.get(agileKey[i]), T - 1)]) ?? T;
+        h = Math.max(next, dayEnd.get(agileKey[i]));
+      }
+      replanAt(i + 1, h);
     }
   }
   return { slots, replans, warmupDays: FORECAST_DEFAULTS.warmupDays };

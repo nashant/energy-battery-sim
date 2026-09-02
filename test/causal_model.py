@@ -384,11 +384,12 @@ def run_replay(usage, load, imp, exp, cfg, params):
     replans = 0
     plan = None
     plan_start = 0
+    plan_max_chg_p = 0
     horizon = day_end[agile_key[0]]
     day_buf = [None] * 48
 
     def replan_at(i, h):
-        nonlocal plan, plan_start, horizon, replans
+        nonlocal plan, plan_start, horizon, replans, plan_max_chg_p
         entries = [{'date': cal_key[t], 'slotOfDay': slot_of_day(usage['wall'][t])}
                    for t in range(i, h)]
         load_f = fc.forecast(entries, cal_key[i])
@@ -396,13 +397,21 @@ def run_replay(usage, load, imp, exp, cfg, params):
         plan_start = i
         horizon = h
         replans += 1
+        # marginal refill price: the dearest slot the plan charges in. A plan that books
+        # no charging (pack already full for its horizon) keeps the last booked price, so
+        # load-following never treats the pack's energy as free.
+        m = 0
+        for t in plan['chg'].keys():
+            m = max(m, imp[i + t])
+        if m > 0:
+            plan_max_chg_p = m
 
     if params.get('useBattery') is not False:
         replan_at(0, horizon)
 
     for i in range(T):
         # publication: first slot of each calendar day at/after 16:00 extends the horizon
-        # to the end of the NEXT tariff-day; the new plan takes effect from the NEXT slot.
+        # to the end of the NEXT tariff-day from the NEXT slot's plan onward.
         publishes = (params.get('useBattery') is not False
                      and usage['wall'][i][11:16] >= PUBLISH_HHMM
                      and (i == 0 or usage['wall'][i - 1][11:16] < PUBLISH_HHMM
@@ -420,6 +429,14 @@ def run_replay(usage, load, imp, exp, cfg, params):
                 dl = min(load[i], q)
                 dx = min(q - dl, cfg['exportSlot']) if allow_export else 0
             planned_soc = plan['plannedSoc'][n] + cfg['reserve']
+        # Self-use load-following: between planned actions the inverter covers the
+        # slot's ACTUAL load from the pack — but only when the avoided import price
+        # beats the plan's marginal refill cost (dearest planned charge, pack-side),
+        # and never while charging. An empty pack makes this a no-op.
+        if cin <= 1e-12 and imp[i] > plan_max_chg_p / cfg['eff'] + 1e-9:
+            extra = min(load[i] - dl, soc - dl - dx, cfg['slotOut'] - dl - dx)
+            if extra > 1e-12:
+                dl += extra
         soc += cin * cfg['eff'] - dl - dx
 
         slots[i] = {'i': i, 'cin': cin, 'dl': dl, 'dx': dx, 'soc': soc,
@@ -434,11 +451,17 @@ def run_replay(usage, load, imp, exp, cfg, params):
             fc.complete_day(cal_key[i], day_buf)
             day_buf = [None] * 48
 
-        if publishes:
-            nxt = day_end.get(agile_key[min(day_end[agile_key[i]], T - 1)])
-            if nxt is None:
-                nxt = T
-            replan_at(min(i + 1, T - 1), max(nxt, day_end[agile_key[i]]))
+        # Receding horizon: re-plan at the start of every slot from the current SOC and
+        # the forecast as it now stands. Publication extends the horizon to the end of the
+        # NEXT tariff-day; otherwise the standing horizon (prices already published) is kept.
+        if params.get('useBattery') is not False and i + 1 < T:
+            h = horizon
+            if publishes:
+                nxt = day_end.get(agile_key[min(day_end[agile_key[i]], T - 1)])
+                if nxt is None:
+                    nxt = T
+                h = max(nxt, day_end[agile_key[i]])
+            replan_at(i + 1, h)
 
     return slots, replans, FORECAST_DEFAULTS['warmupDays']
 

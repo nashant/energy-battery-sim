@@ -33,16 +33,24 @@ the code uses ES modules.
   (Agile day-ahead lands at 16:00), and a load *forecast* built from days it has
   already lived through. It starts knowing nothing — the first two weeks are a
   cold-start warm-up while the forecast learns your house.
-- **Planning.** At 16:00 each day the plan is recomputed from the next half hour
-  out to 23:00 tomorrow: charge in the cheapest slots, hold, serve the house and
-  export through the peaks — sized against forecast load, never actual future
-  load. Energy is only charged if it can be placed profitably before the end of
-  the known-price horizon.
+- **Planning.** At the start of every half hour the plan is recomputed from the
+  battery's current charge and the latest forecast, out to the end of the
+  published prices (23:00 today until the 16:00 publication, then 23:00
+  tomorrow): charge in the cheapest slots, hold, serve the house and export
+  through the peaks — sized against forecast load, never actual future load.
+  Only the first step of each plan is ever executed, so forecast error corrects
+  within the half hour instead of compounding until the next day. Energy is only
+  charged if it can be placed profitably before the end of the known-price
+  horizon.
 - **Execution.** Each half hour the plan meets reality: discharge covers the
   slot's actual load first (a meter settles one direction per half hour), any
   planned remainder exports under the G100 cap, and the forecast learns from the
-  actual. A dashed line on the day chart shows what the plan expected the state
-  of charge to be; the solid area shows what actually happened.
+  actual. Between planned actions the inverter load-follows in self-use mode —
+  covering actual load the forecast missed — but only when the avoided import
+  price beats the plan's marginal refill cost, so the pack is never drained into
+  slots cheaper than refilling it. A dashed line on the day chart shows what the
+  plan expected the state of charge to be; the solid area shows what actually
+  happened.
 - Numbers from this engine are lower than the old perfect-foresight build's —
   deliberately. Those assumed a year of hindsight; these are achievable.
 - Consumption is assumed unchanged by the tariff switch.

@@ -172,3 +172,36 @@ achieves; wear is reported alongside, not subtracted from it.
   15 on the pruned kWh), so the cautious figure over-prunes — the planner treats wear as a
   hard cost per kWh, which is right only if the pack really is cycle-limited.
 - `refillCost` remains ahead of the shipped valuation at every wear level tested.
+
+## Solar (2026-09-04)
+
+First real-house PV scores via `test/pv_fetch.mjs` + `test/score.mjs --pv`. Site: postcode
+RG31 6JU, one array "rear wall" (bearing 191°, tilt 90° i.e. vertical, 4 kWp, 14% losses,
+3.68 kW inverter, AC-coupled). `pv_fetch` against the real usage year: **2,786 kWh/yr, 0
+slots without data, 0 DST-filled**. 32 kWh / 10 kW, contiguous, cap 32 kWh / inverter 10 kW
+throughout.
+
+| tariff | export | packEnergyWorth | PV kWh | PV→batt (stored) | PV exp | PV spill | nobat £ | bat £ | saving £ |
+|---|---|---|---|---|---|---|---|---|---|
+| Agile+Outgoing | on  | displacedPrice | 2786 | 651 | 433 | 0   | 874.38 | 354.84  | 519.54 |
+| Agile+Outgoing | on  | refillCost     | 2786 | 653 | 429 | 1   | 874.38 | 342.14  | 532.24 |
+| Agile          | off | refillCost     | 2786 | 756 | 0   | 327 | 965.56 | 575.80  | 389.75 |
+| Go+Outgoing    | on  | displacedPrice | 2786 | 279 | 804 | 0   | 1021.87 | 59.35  | 962.52 |
+| Go+Outgoing    | on  | refillCost     | 2786 | 292 | 790 | 2   | 1021.87 | -73.92 | 1095.79 |
+
+No-PV baselines for the same flags (from the sections above and re-run here to confirm):
+Agile+Outgoing displacedPrice/refillCost 634.77 / 657.37 (nobat 1285.01); Agile no-export
+refillCost 474.25 (nobat 1285.01); Go+Outgoing displacedPrice/refillCost 1132.19 / 1355.66
+(nobat 1630.72) — all match the reference figures exactly.
+
+PV output (2,786 kWh/yr) lands at the top of the pre-engine UK-2km-model estimate for this
+wall (2,600-2,800 kWh/yr). Adding PV drops `nobat £` by £409-609/yr (the direct value of
+self-consumed + exported solar) in every row, as expected — but the battery's own marginal
+contribution (the `saving £` column, nobat-with-PV minus bat-with-PV) comes out *lower* than
+the no-PV battery saving in all five rows (e.g. Go+Outgoing refillCost: £1,095.79 with PV vs
+£1,355.66 without; Agile+Outgoing refillCost: £532.24 vs £657.37), because PV already
+supplies the cheap/self-generated energy the battery used to arbitrage and the two compete
+for the same export-limit headroom (`js/data.js:305`, `pvx = min(sur, exportSlot - dx)`) —
+whole-house saving (PV + battery vs neither) is still larger throughout (e.g. Go+Outgoing
+refillCost: 1630.72-(-73.92) = £1,704.71 combined vs £1,355.66 battery-only), just not the
+narrower per-battery figure the task brief's sanity check assumed.

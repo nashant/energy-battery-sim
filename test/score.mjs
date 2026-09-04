@@ -18,6 +18,7 @@ if (!args.usage || !args.prices) {
 const usage = parseUsage(readFileSync(args.usage, 'utf8'));
 const { imp, exp, dstFilled } = alignPrices(parsePrices(readFileSync(args.prices, 'utf8')), usage.utc);
 const load = usage.kwh.slice();
+const pvSeries = args.pv ? JSON.parse(readFileSync(args.pv, 'utf8')).series : null;
 const from = args.from ?? '0000';
 const nDaysScored = new Set(usage.wall.map((w) => w.slice(0, 10)).filter((d) => d >= from)).size;
 console.log(`${usage.utc.length} slots, ${usage.wall[0]} .. ${usage.wall.at(-1)}, ` +
@@ -44,7 +45,7 @@ for (const ramp of list('ramp', base.rampSlots)) {
     batteryCost: num(args.cost ?? 3500), cycleLife: num(cycles),
   };
   const t0 = performance.now();
-  const wb = runSim({ usage, load, imp, exp, scTotalP: 0, params });
+  const wb = runSim({ usage, load, imp, exp, scTotalP: 0, params, pv: pvSeries });
   const ms = performance.now() - t0;
   const days = wb.perDay.filter((d) => d.day >= from);
   const saved = days.reduce((a, d) => a + d.savedP, 0) / 100;
@@ -59,9 +60,11 @@ for (const ramp of list('ramp', base.rampSlots)) {
     '£/yr': (saved * 365 / days.length).toFixed(2), 'wear £/yr': (wb.wear * 365 / wb.nDays).toFixed(2),
     'net £/yr': ((saved - wb.wear) * 365 / days.length).toFixed(2),
     'kWh cycled': cycled.toFixed(0), 'kWh exported': exported.toFixed(0),
+    'PV kWh': wb.pvKwh.toFixed(0), 'PV→batt': wb.pvToBattery.toFixed(0),
+    'PV exp': wb.pvExport.toFixed(0), 'PV spill': wb.pvSpill.toFixed(0),
     replans: wb.replans, viol: wb.socViolations, ms: ms.toFixed(0),
   });
-  console.error(`  ${rows.length}: ${cap}kWh/${inv}kW ${cycle} export=${ex} ${holdFor} ${packEnergyWorth} ${priceHorizon} every=${replanEvery} α=${alpha} λ=${lam} ramp=${ramp} cycles=${cycles || 'none'} -> £${saved.toFixed(2)} wear £${wb.wear.toFixed(2)} exp ${exported.toFixed(0)} kWh (${ms.toFixed(0)} ms)`);
+  console.error(`  ${rows.length}: ${cap}kWh/${inv}kW ${cycle} export=${ex} ${holdFor} ${packEnergyWorth} ${priceHorizon} every=${replanEvery} α=${alpha} λ=${lam} ramp=${ramp} cycles=${cycles || 'none'} -> £${saved.toFixed(2)} wear £${wb.wear.toFixed(2)} exp ${exported.toFixed(0)} kWh (${ms.toFixed(0)} ms) pv ${wb.pvToBattery.toFixed(0)}/${wb.pvKwh.toFixed(0)} kWh stored`);
 }
 Object.assign(FORECAST_DEFAULTS, base);
 console.table(rows);

@@ -2,6 +2,7 @@
 """Regenerate test/causal_fixture.json from the Python reference. Deterministic."""
 import datetime
 import json
+import math
 from causal_model import run_replay, make_cfg
 
 
@@ -37,6 +38,25 @@ def synth(days, seed):
     return {'wall': wall, 'localFloat': lf}, load, imp, exp
 
 
+def synth_pv(days, seed, kwp=4.0):
+    """Bell-shaped PV with a per-day cloud factor; forecasts are the actual with day-level noise."""
+    rnd = lcg(seed)
+    T = days * 48
+    actual, f1, f2 = [], [], []
+    for d in range(days):
+        cloud = 0.3 + 0.7 * next(rnd)
+        n1 = 0.75 + 0.5 * next(rnd)
+        n2 = 0.6 + 0.8 * next(rnd)
+        for s in range(48):
+            hh = s / 2
+            bell = math.sin(math.pi * (hh - 6) / 12) ** 1.5 if 6 < hh < 18 else 0.0
+            v = round(kwp * 0.4 * bell * cloud, 6)          # kWh per half hour
+            actual.append(v)
+            f1.append(round(v * n1, 6))
+            f2.append(round(v * n2, 6))
+    return actual, f1, f2
+
+
 # (name, params, export-price multiplier). expMul > 1/0.6 lifts export ABOVE import,
 # which is the regime where a greedy pairer wants to import and export in the SAME slot;
 # the planner's one-meter XOR rule forbids it, so parity has to cover that branch too.
@@ -60,21 +80,32 @@ CASES = [
                                batteryCost=3500.0, cycleLife=6000), 1.0),
     ('scattered-wear',    dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None,
                                batteryCost=3500.0, cycleLife=6000, packEnergyWorth='refillCost'), 1.0),
+    ('contig-pv-ac',      dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               packEnergyWorth='refillCost'), 1.0, 'ac'),
+    ('scattered-pv-dc',   dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=None), 1.0, 'dc'),
+    ('contig-pv-noexp',   dict(cycle='contiguous', allowExport=False, exportLimitKw=None, maxChargePrice=None), 1.0, 'ac'),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)
 
 if __name__ == '__main__':
     out = []
-    for name, extra, exp_mul in CASES:
+    for name, extra, exp_mul, *pvc in CASES:
         usage, load, imp, exp = synth(35, seed=42)
         exp = [round(v * exp_mul, 4) for v in exp]
         params = {**BASE, **extra}
-        slots, replans, warmup = run_replay(usage, load, imp, exp, make_cfg(params), params)
+        pv = None
+        if pvc:
+            a, f1, f2 = synth_pv(35, seed=7)
+            z = [0.0] * len(a)
+            pv = ({'ac': a, 'dc': z, 'acF1': f1, 'acF2': f2, 'dcF1': z, 'dcF2': z} if pvc[0] == 'ac'
+                  else {'ac': z, 'dc': a, 'acF1': z, 'acF2': z, 'dcF1': f1, 'dcF2': f2})
+        slots, replans, warmup = run_replay(usage, load, imp, exp, make_cfg(params), params, pv)
         out.append({'meta': {'name': name}, 'usage': usage, 'load': load, 'imp': imp,
-                    'exp': exp, 'params': params,
-                    'expected': {'slots': [{'cin': s['cin'], 'dl': s['dl'],
-                                            'dx': s['dx'], 'soc': s['soc']} for s in slots],
+                    'exp': exp, 'params': params, 'pv': pv,
+                    'expected': {'slots': [{'cin': s['cin'], 'dl': s['dl'], 'dx': s['dx'],
+                                            'soc': s['soc'], 'pvc': s['pvc'], 'pvx': s['pvx']}
+                                            for s in slots],
                                  'replans': replans}})
     with open('causal_fixture.json', 'w') as f:
         json.dump(out, f)

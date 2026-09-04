@@ -17,12 +17,13 @@ const REVEAL = 20 * 48 + 33;   // first slot governed by the 16:00 plan that rev
 
 for (const c of cases) {
   const cfg = makeCfg(c.params);
-  const { slots, replans } = runReplay(c.usage, c.load, c.imp, c.exp, cfg, c.params);
+  const { slots, replans } = runReplay(c.usage, c.load, c.imp, c.exp, cfg, c.params, c.pv ?? null);
   let worst = 0;
   slots.forEach((s, i) => {
     const e = c.expected.slots[i];
     worst = Math.max(worst, Math.abs(s.cin - e.cin), Math.abs(s.dl - e.dl),
-                     Math.abs(s.dx - e.dx), Math.abs(s.soc - e.soc));
+                     Math.abs(s.dx - e.dx), Math.abs(s.soc - e.soc),
+                     Math.abs((s.pvc || 0) - (e.pvc || 0)), Math.abs((s.pvx || 0) - (e.pvx || 0)));
   });
   ok(`parity ${c.meta.name} (worst ${worst.toExponential(1)})`, worst <= 1e-9);
   ok(`parity ${c.meta.name} replans`, replans === c.expected.replans);
@@ -40,9 +41,18 @@ for (const c of cases) {
   const imp2 = c.imp.map((v, i) => (i >= CUT && !knownImp ? 999 : v));
   const exp2 = c.exp.map((v, i) => (i >= CUT ? -999 : v));
   const load2 = c.load.map((v, i) => (i >= CUT ? 17 : v));
-  const a = runReplay(c.usage, c.load, c.imp, c.exp, cfg, c.params).slots;
-  const b = runReplay(c.usage, load2, imp2, exp2, cfg, c.params).slots;
-  const differs = (i) => a[i].cin !== b[i].cin || a[i].dl !== b[i].dl || a[i].dx !== b[i].dx;
+  // PV: actual is garbage from the cut; a forecast value is garbage from the slot whose
+  // forecast would have been ISSUED at/after the cut (day-1: cut + 48, day-2: cut + 96).
+  const garble = (arr, from) => arr && arr.map((v, i) => (i >= from ? 7 : v));
+  const pv2 = c.pv && {
+    ac: garble(c.pv.ac, CUT), dc: garble(c.pv.dc, CUT),
+    acF1: garble(c.pv.acF1, CUT + 48), dcF1: garble(c.pv.dcF1, CUT + 48),
+    acF2: garble(c.pv.acF2, CUT + 96), dcF2: garble(c.pv.dcF2, CUT + 96),
+  };
+  const a = runReplay(c.usage, c.load, c.imp, c.exp, cfg, c.params, c.pv ?? null).slots;
+  const b = runReplay(c.usage, load2, imp2, exp2, cfg, c.params, pv2 ?? null).slots;
+  const differs = (i) => a[i].cin !== b[i].cin || a[i].dl !== b[i].dl || a[i].dx !== b[i].dx ||
+    a[i].pvc !== b[i].pvc || a[i].pvx !== b[i].pvx;
   let leak = -1;
   for (let i = 0; i < REVEAL; i++) if (differs(i)) { leak = i; break; }
   ok(`causality ${c.meta.name}: no future leakage before the cut` +

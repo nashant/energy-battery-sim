@@ -8,8 +8,15 @@ export function makeCfg(p) {
   // discharge floor: the bottom N% is never cycled, so the solver works entirely in
   // the usable band above it and the reserve only reappears in displayed soc
   const floor = p.dischargeFloorPct ? Math.min(Math.max(p.dischargeFloorPct, 0), 95) / 100 : 0;
+  const cap = p.capacity * (1 - floor);
+  // cycle wear: battery cost spread over the throughput the maker's cycle life implies,
+  // in p per pack-kWh stored. Charged once, on the charge side, so every refill-cost
+  // comparison (pass 2 spreads, hold floors, load-following) inherits it. 0 when blank.
+  const wearP = p.cycleLife > 0 && p.batteryCost > 0 && cap > 0
+    ? (p.batteryCost * 100) / (p.cycleLife * cap) : 0;
   return {
-    cap: p.capacity * (1 - floor),
+    cap,
+    wearP,
     reserve: p.capacity * floor,
     eff: p.roundTrip,
     slotIn: invSlot,

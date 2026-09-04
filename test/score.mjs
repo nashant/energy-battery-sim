@@ -32,6 +32,7 @@ for (const holdFor of list('holdFor', 'anyCheaperRefill'))
 for (const packEnergyWorth of list('packEnergyWorth', 'displacedPrice'))
 for (const priceHorizon of list('priceHorizon', 'published'))
 for (const replanEvery of list('replanEvery', 1))
+for (const cycles of list('cycles', ''))
 for (const alpha of list('alpha', base.alpha)) for (const lam of list('lambda', base.lambdaFull))
 for (const ramp of list('ramp', base.rampSlots)) {
   Object.assign(FORECAST_DEFAULTS, { alpha: +alpha, lambdaFull: +lam, rampSlots: +ramp });
@@ -40,6 +41,7 @@ for (const ramp of list('ramp', base.rampSlots)) {
     inverterKw: +inv, exportLimitKw: num(args.g100 ?? ''), totalImportLimitKw: null,
     maxChargePrice: num(args.maxchg ?? ''), cycle, allowExport: ex === '1', useBattery: true,
     holdFor, packEnergyWorth, priceHorizon, replanEvery: +replanEvery,
+    batteryCost: num(args.cost ?? 3500), cycleLife: num(cycles),
   };
   const t0 = performance.now();
   const wb = runSim({ usage, load, imp, exp, scTotalP: 0, params });
@@ -51,14 +53,15 @@ for (const ramp of list('ramp', base.rampSlots)) {
   const cycled = days.reduce((a, d) => a + d.kwhOut, 0);
   const exported = wb.slots.filter((x) => x.day >= from).reduce((a, x) => a + x.disExp, 0);
   rows.push({
-    cap, inv, cycle, export: ex, holdFor, packEnergyWorth, priceHorizon, replanEvery,
+    cap, inv, cycle, export: ex, holdFor, packEnergyWorth, priceHorizon, replanEvery, cycles,
     alpha, lambda: lam, ramp,
     'nobat £': nobat.toFixed(2), 'bat £': cost.toFixed(2), 'saved £': saved.toFixed(2),
-    '£/yr': (saved * 365 / days.length).toFixed(2), 'kWh cycled': cycled.toFixed(0),
-    'kWh exported': exported.toFixed(0),
+    '£/yr': (saved * 365 / days.length).toFixed(2), 'wear £/yr': (wb.wear * 365 / wb.nDays).toFixed(2),
+    'net £/yr': ((saved - wb.wear) * 365 / days.length).toFixed(2),
+    'kWh cycled': cycled.toFixed(0), 'kWh exported': exported.toFixed(0),
     replans: wb.replans, viol: wb.socViolations, ms: ms.toFixed(0),
   });
-  console.error(`  ${rows.length}: ${cap}kWh/${inv}kW ${cycle} export=${ex} ${holdFor} ${packEnergyWorth} ${priceHorizon} every=${replanEvery} α=${alpha} λ=${lam} ramp=${ramp} -> £${saved.toFixed(2)} exp ${exported.toFixed(0)} kWh (${ms.toFixed(0)} ms)`);
+  console.error(`  ${rows.length}: ${cap}kWh/${inv}kW ${cycle} export=${ex} ${holdFor} ${packEnergyWorth} ${priceHorizon} every=${replanEvery} α=${alpha} λ=${lam} ramp=${ramp} cycles=${cycles || 'none'} -> £${saved.toFixed(2)} wear £${wb.wear.toFixed(2)} exp ${exported.toFixed(0)} kWh (${ms.toFixed(0)} ms)`);
 }
 Object.assign(FORECAST_DEFAULTS, base);
 console.table(rows);

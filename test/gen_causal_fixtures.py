@@ -55,6 +55,11 @@ CASES = [
                                priceHorizon='knownSchedule48h', replanEvery=2), 1.0),
     ('scattered-never',   dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=None,
                                holdFor='never', packEnergyWorth='refillCost'), 1.0),
+    # cycle wear: 3500*100/(6000*10.8) = 5.4 p per pack-kWh, enough to prune thin spreads
+    ('contig-wear',       dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               batteryCost=3500.0, cycleLife=6000), 1.0),
+    ('scattered-wear',    dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               batteryCost=3500.0, cycleLife=6000, packEnergyWorth='refillCost'), 1.0),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)

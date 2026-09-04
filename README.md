@@ -54,6 +54,12 @@ the code uses ES modules.
 - Numbers from this engine are lower than the old perfect-foresight build's —
   deliberately. Those assumed a year of hindsight; these are achievable.
 - Consumption is assumed unchanged by the tariff switch.
+- **Cycle wear** (optional). Battery cost ÷ (cycle life × usable kWh) gives a wear charge in
+  p per kWh stored; it is added once, on the charge side, so pass-2 spreads, the hold floors
+  and the load-following gate all see it, and trades thinner than the wear are skipped.
+  Reported separately as £/yr and as cycles per year against the quoted life; it is not
+  subtracted from the energy saving or counted again in payback, which already uses the
+  full battery cost.
 - Export choices are limited to the pairings Octopus permits (Smart Tariffs T&Cs: Flux is
   import+export only, §2.7.1; Go and Cosy pair only with Outgoing SEG, Outgoing Octopus or
   Agile Outgoing, §2.1.2/§2.6.2). Compare runs every permitted pairing that has a published
@@ -122,6 +128,7 @@ node test/score.mjs --usage usage.csv --prices prices-agile-J.csv               
 node test/score.mjs ... --cap 32,10 --inv 10,5 --cycle contiguous,scattered --export 0,1
 node test/score.mjs ... --alpha 0.15,0.3 --lambda 0,0.75,1 --ramp 8,16 --from 2025-08-18
 node test/score.mjs ... --holdFor anyCheaperRefill,laterCheaperRefill --packEnergyWorth displacedPrice,refillCost
+node test/score.mjs ... --cycles 4000,8000 --cost 3500                  # cycle wear; blank cycles = none
 ```
 
 The Python reference for the causal engine is `test/causal_model.py` — a line-for-line

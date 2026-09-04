@@ -91,11 +91,11 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
   // goes to export and to load before the refill instead of to tomorrow's load.
   let cheapest = Infinity;
   for (let t = 0; t < T; t++) if (imp[t] <= cfg.maxChgP) cheapest = Math.min(cheapest, imp[t]);
-  const floor1 = Number.isFinite(cheapest) ? Math.max(0, cheapest) / cfg.eff : 0;
+  const floor1 = Number.isFinite(cheapest) ? Math.max(0, cheapest) / cfg.eff + cfg.wearP : 0;
   const sufMin = new Float64Array(T), preMin = new Float64Array(T);
   for (let t = T - 1, m = Infinity; t >= 0; t--) { sufMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
   for (let t = 0, m = Infinity; t < T; t++) { preMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
-  const packCost = (p) => (Number.isFinite(p) ? Math.max(0, p) / cfg.eff : 0);
+  const packCost = (p) => (Number.isFinite(p) ? Math.max(0, p) / cfg.eff + cfg.wearP : 0);
   const floorAt = (t) => cfg.holdFor === 'never' ? 0
     : cfg.holdFor === 'laterCheaperRefill' ? packCost(sufMin[t]) : floor1;
   const refillCost = cfg.packEnergyWorth === 'refillCost';
@@ -115,7 +115,7 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
     const cand = [];
     for (let t = 0; t < T; t++) {
       if (imp[t] <= cfg.maxChgP) {
-        cand.push({ t, cost: imp[t] / cfg.eff, room: chargeInSlot(cfg, loadF[t]) });
+        cand.push({ t, cost: imp[t] / cfg.eff + cfg.wearP, room: chargeInSlot(cfg, loadF[t]) });
       }
     }
     cand.sort((a, b) => a.cost - b.cost || a.t - b.t);
@@ -195,7 +195,7 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
         const add = (disRaw.get(t) || 0) > EPS
           ? 0 : Math.min(chargeInSlot(cfg, loadF[t]) * cfg.eff, rem);
         if (add <= EPS) continue;
-        cost += (add / cfg.eff) * imp[t];
+        cost += (add / cfg.eff) * imp[t] + add * cfg.wearP;
         w.set(t, add / cfg.eff);
         rem -= add;
       }

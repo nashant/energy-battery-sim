@@ -197,6 +197,7 @@ function params() {
     roundTrip: Number($('roundTrip').value) / 100,
     dischargeFloorPct: num('dischargeFloor') || 0,
     inverterKw: Number($('inverterKw').value),
+    cycleLife: num('cycleLife'),
     exportLimitKw: num('exportLimitKw'),
     totalImportLimitKw: num('totalImportLimitKw'),
     maxChargePrice: num('maxChargePrice'),
@@ -430,8 +431,12 @@ function render() {
       : `from your CSV · ${cur.impliedRate.toFixed(2)} p/kWh implied`)}
     ${card('Tariff, no battery', gbp(noBat.total), `energy ${gbp(noBat.energy)} + standing ${gbp(noBat.sc)}`)}
     ${card('With battery', gbp(withBat.total), `energy ${gbp(withBat.energy)} + standing ${gbp(withBat.sc)}`)}
-    ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery`,
+    ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery` +
+           (withBat.wearP > 0 ? `<br>${gbp(save - withBat.wear)} net of battery wear` : ''),
            save >= 0 ? 'pos' : 'neg')}
+    ${withBat.wearP > 0 ? card('Battery wear', `${gbp(withBat.wear * annual)}/yr`,
+      `${withBat.wearP.toFixed(2)} p per kWh stored · ${(withBat.stored / withBat.usableCap * annual).toFixed(0)} cycles/yr ` +
+      `→ ${(p.cycleLife / (withBat.stored / withBat.usableCap * annual)).toFixed(0)} yrs to ${p.cycleLife.toLocaleString('en-GB')} cycles`) : ''}
     ${invest > 0 ? card('Payback', fmtYears(pbCur) + fmtRoi(roiCur), [
       (hpCost > 0 ? `${gbp(cost)} battery + ${gbp(hpCost)} heat pump` : gbp(invest)) +
         ` ÷ ${gbp(pbSave)}/yr vs your current setup`,

@@ -140,3 +140,35 @@ adjusted ceiling for this pair ≈ £525/yr of export margin.
 
 Recommendation: consider making `packEnergyWorth: refillCost` the default after a second
 household's data confirms it; the other flags stay opt-in.
+
+## Cycle wear (2026-09-04, later still)
+
+`cycleLife` derives a wear charge of battery cost ÷ (cycles × usable kWh), applied once on
+the charge side. Fogstar quote 8,000 cycles at 91% DoD for the £3,500 32 kWh pack, which is
+1.52 p per kWh stored (28.8 kWh usable); 4,000 cycles is the cautious planning case. The
+10 kWh rows below keep the same £3,500 cost, so their wear per kWh is 4.9 p at 8,000
+cycles — pessimistic for a real 10 kWh pack.
+
+£/yr, contiguous, export on unless stated. "gross" is the energy saving the planner
+achieves; wear is reported alongside, not subtracted from it.
+
+| tariff, pack | packEnergyWorth | cycles | gross | wear | kWh exported | cycles/yr |
+|---|---|---|---|---|---|---|
+| Go, 32/10 | displacedPrice | none / 8000 / 4000 | 1132 / 1132 / 1132 | 0 / 85 / 170 | 486 / 481 / 472 | ~195 |
+| Go, 32/10 | refillCost | none / 8000 / 4000 | 1356 / 1356 / 1355 | 0 / 117 / 235 | 2632 / 2628 / 2618 | ~269 |
+| Agile, 32/10 | displacedPrice | none / 8000 / 4000 | 635 / 627 / 606 | 0 / 70 / 122 | 1385 / 985 / 780 | ~160 |
+| Agile, 32/10 | refillCost | none / 8000 / 4000 | 657 / 653 / 638 | 0 / 85 / 144 | 2769 / 2195 / 1827 | ~193 |
+| Agile no-export, 32/10 | displacedPrice | none / 8000 / 4000 | 403 / 390 / 376 | 0 / 45 / 79 | — | ~103 |
+| Agile no-export, 32/10 | refillCost | none / 8000 / 4000 | 474 / 472 / 456 | 0 / 56 / 97 | — | ~129 |
+| Go, 10/5 | displacedPrice | none / 8000 / 4000 | 684 / 682 / 682 | 0 / 158 / 315 | 6 / 2 / 2 | ~360 |
+| Agile, 10/5 | refillCost | none / 8000 / 4000 | 391 / 375 / 335 | 0 / 109 / 158 | 348 / 146 / 101 | ~250 |
+
+- On Go the spreads (6-15 p) dwarf the wear, so decisions barely move; the value is the
+  reported wear and cycles/yr. At ~270 cycles/yr the 8,000-cycle pack is calendar-limited,
+  not cycle-limited.
+- On Agile wear prunes the 2-5 p export trades: at 8,000 cycles gross drops £4-8 while
+  export falls 20-30%, roughly neutral net of wear; at 4,000 cycles the pruning costs more
+  gross than it saves in wear on the 32 kWh pack (−£20 to −£29 gross vs wear avoided ≈ £10-
+  15 on the pruned kWh), so the cautious figure over-prunes — the planner treats wear as a
+  hard cost per kWh, which is right only if the pack really is cycle-limited.
+- `refillCost` remains ahead of the shipped valuation at every wear level tested.

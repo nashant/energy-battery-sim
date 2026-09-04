@@ -297,6 +297,17 @@ ok('roi null on zero cost', roiPct(0, 1000) === null);
 ok('roi null on negative cost', roiPct(-1, 1000) === null);
 ok('roi null on non-finite saving', roiPct(3500, NaN) === null);
 
+// ---- cycle wear: cost spread over cycle life x usable capacity, p per pack-kWh
+{
+  const base = { capacity: 32, roundTrip: 0.9, dischargeFloorPct: 10, inverterKw: 10, batteryCost: 3500 };
+  ok('wear is 0 without a cycle life', makeCfg(base).wearP === 0);
+  ok('wear is 0 without a battery cost', makeCfg({ ...base, batteryCost: null, cycleLife: 8000 }).wearP === 0);
+  ok('wear = cost*100 / (cycles * usable kWh)',
+     close(makeCfg({ ...base, cycleLife: 8000 }).wearP, 350000 / (8000 * 28.8)));
+  ok('wear uses the usable band, not the nameplate',
+     close(makeCfg({ ...base, dischargeFloorPct: 0, cycleLife: 8000 }).wearP, 350000 / (8000 * 32)));
+}
+
 // ---- tariff pairings: js/tariffs.js `exports` lists mirror the Smart Tariffs T&Cs
 import { IMPORT_TARIFFS, EXPORT_TARIFFS } from '../js/tariffs.js';
 const tariffExports = (k) => IMPORT_TARIFFS[k].exports;

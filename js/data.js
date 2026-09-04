@@ -264,7 +264,7 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     // ACTUAL load from the pack — but only when the avoided import price beats the
     // plan's marginal refill cost (dearest planned charge, pack-side), and never while
     // charging (the battery can't do both). An empty pack makes this a no-op.
-    if (cin <= 1e-12 && imp[i] > planMaxChgP / cfg.eff + 1e-9) {
+    if (cin <= 1e-12 && imp[i] > planMaxChgP / cfg.eff + cfg.wearP + 1e-9) {
       const extra = Math.min(load[i] - dl, soc - dl - dx, cfg.slotOut - dl - dx);
       if (extra > 1e-12) dl += extra;
     }
@@ -351,6 +351,8 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
   }));
 
   const energy = perDay.reduce((a, d) => a + d.costP, 0) / 100;
+  const stored = exec.reduce((a, s) => a + s.cin, 0) * cfg.eff;     // pack-kWh charged
+  const wear = stored * cfg.wearP / 100;                             // £, not in `energy`
   const baseline = perDay.reduce((a, d) => a + d.baseP, 0) / 100;
   const cycled = perDay.reduce((a, d) => a + d.kwhOut, 0);
   const nDays = load.length / 48;
@@ -366,6 +368,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
     meanThroughput: cycled / Math.max(1, perDay.length),
     utilisation: 100 * (cycled / Math.max(1, perDay.length)) / cfg.cap,
     maxExportSlot, socViolations: violations,
+    wear, wearP: cfg.wearP, stored,
     warmupDays, replans,
     perDay, slots,
   };

@@ -42,8 +42,13 @@ def make_cfg(p):
     inv_slot = p['inverterKw'] * 0.5
     floor = min(max(p.get('dischargeFloorPct'), 0), 95) / 100 if p.get('dischargeFloorPct') else 0
     mcp = p.get('maxChargePrice')
+    cap = p['capacity'] * (1 - floor)
+    cycle_life = p.get('cycleLife') or 0
+    battery_cost = p.get('batteryCost') or 0
+    wear_p = (battery_cost * 100) / (cycle_life * cap) if cycle_life > 0 and battery_cost > 0 and cap > 0 else 0
     return {
-        'cap': p['capacity'] * (1 - floor),
+        'cap': cap,
+        'wearP': wear_p,
         'reserve': p['capacity'] * floor,
         'eff': p['roundTrip'],
         'slotIn': inv_slot,
@@ -237,7 +242,7 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
     for t in range(T):
         if imp[t] <= cfg['maxChgP']:
             cheapest = min(cheapest, imp[t])
-    floor1 = max(0, cheapest) / cfg['eff'] if math.isfinite(cheapest) else 0
+    floor1 = max(0, cheapest) / cfg['eff'] + cfg['wearP'] if math.isfinite(cheapest) else 0
     suf_min = [math.inf] * T
     pre_min = [math.inf] * T
     m = math.inf
@@ -252,7 +257,7 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
             m = min(m, imp[t])
 
     def pack_cost(p):
-        return max(0, p) / cfg['eff'] if math.isfinite(p) else 0
+        return max(0, p) / cfg['eff'] + cfg['wearP'] if math.isfinite(p) else 0
 
     def floor_at(t):
         if cfg['holdFor'] == 'never':
@@ -283,7 +288,7 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
         cand = []
         for t in range(T):
             if imp[t] <= cfg['maxChgP']:
-                cand.append({'t': t, 'cost': imp[t] / cfg['eff'],
+                cand.append({'t': t, 'cost': imp[t] / cfg['eff'] + cfg['wearP'],
                              'room': charge_in_slot(cfg, load_f[t])})
         cand.sort(key=lambda c: (c['cost'], c['t']))
         for b in buckets:
@@ -370,7 +375,7 @@ def _contiguous_pass(L, chg, dis_raw, slot_rem, imp, exp, load_f, cfg, allow_exp
                        else min(charge_in_slot(cfg, load_f[t]) * cfg['eff'], rem))
                 if add <= EPS:
                     continue
-                cost += (add / cfg['eff']) * imp[t]
+                cost += (add / cfg['eff']) * imp[t] + add * cfg['wearP']
                 w[t] = add / cfg['eff']
                 rem -= add
             E = target - rem
@@ -495,7 +500,7 @@ def run_replay(usage, load, imp, exp, cfg, params):
         # slot's ACTUAL load from the pack — but only when the avoided import price
         # beats the plan's marginal refill cost (dearest planned charge, pack-side),
         # and never while charging. An empty pack makes this a no-op.
-        if cin <= 1e-12 and imp[i] > plan_max_chg_p / cfg['eff'] + 1e-9:
+        if cin <= 1e-12 and imp[i] > plan_max_chg_p / cfg['eff'] + cfg['wearP'] + 1e-9:
             extra = min(load[i] - dl, soc - dl - dx, cfg['slotOut'] - dl - dx)
             if extra > 1e-12:
                 dl += extra

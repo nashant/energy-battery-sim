@@ -10,6 +10,10 @@ const gbp = (n) => (n < 0 ? '−' : '') + '£' + Math.abs(n).toLocaleString('en-
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+const status = (html) => { $('status').innerHTML = html; };
+const showError = (m) => { $('errBox').innerHTML = `<div class="err">${m}</div>`; };
+const clearError = () => { $('errBox').innerHTML = ''; };
+
 const state = { usage: null, gas: null, run: null, flow: null, timer: null, dayIndex: new Map() };
 state.solar = { postcode: '', lat: null, lon: null, arrays: [], pv: null, pvKey: null };
 
@@ -185,7 +189,7 @@ function renderArrays() {
   const s = state.solar;
   $('arrays').innerHTML = s.arrays.map((a) => `
     <div class="array" data-id="${a.id}">
-      <button class="rm" data-rm="${a.id}">remove</button>
+      <button type="button" class="rm" data-rm="${a.id}">remove</button>
       <div class="row4">
         <div><label>Name</label><input data-k="name" type="text" value="${esc(a.name)}"></div>
         <div><label>Faces (°)</label><input data-k="bearing" type="number" min="0" max="359" value="${a.bearing}"></div>
@@ -269,7 +273,7 @@ async function restoreControls() {
   }
   if (v.solar) {
     Object.assign(state.solar, v.solar);
-    $('postcode').value = v.solar.postcode || '';
+    $('postcode').value = v.solar.postcode || v.postcode || '';
     if (v.solar.lat) $('siteNote').textContent = `${v.solar.postcode}: ${v.solar.lat.toFixed(4)}, ${v.solar.lon.toFixed(4)}`;
     renderArrays();
   }
@@ -350,10 +354,6 @@ function buildLoad(p) {
   }
   return { load: add ? base.map((v, i) => v + add[i]) : base.slice(), add, info };
 }
-
-const status = (html) => { $('status').innerHTML = html; };
-const showError = (m) => { $('errBox').innerHTML = `<div class="err">${m}</div>`; };
-const clearError = () => { $('errBox').innerHTML = ''; };
 
 // ------------------------------------------------------------------ run
 

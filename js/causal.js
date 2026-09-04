@@ -102,14 +102,24 @@ const minOver = (L, a, b) => { let m = Infinity; for (let t = a; t < b; t++) m =
 const maxOver = (L, a, b) => { let m = -Infinity; for (let t = a; t < b; t++) m = Math.max(m, L[t]); return m; };
 const addRange = (L, a, b, q) => { for (let t = a; t < b; t++) L[t] += q; };
 
-export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
+export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport, pvF = null) {
   const T = imp.length;
   const L = new Float64Array(T).fill(Math.min(soc0, cfg.cap));
   const chg = new Map();                      // t -> grid-side kWh
+  const pvChg = new Map();                    // t -> PV kWh (AC/DC side) into the pack
   const disRaw = new Map();                   // t -> pack-side kWh out (pre-netting)
   const slotRem = new Float64Array(T).fill(cfg.slotOut);
 
-  const buckets = dischargeBuckets(imp, exp, loadF, 0, allowExport, cfg)
+  // Net load: PV serves the house first. A deficit slot behaves exactly as load did; a
+  // surplus slot exports (or spills) what the pack does not take, so it never imports.
+  const defF = new Float64Array(T), surF = new Float64Array(T);
+  for (let t = 0; t < T; t++) {
+    const pv = pvF ? pvF.ac[t] + pvF.dc[t] : 0;
+    const net = loadF[t] - pv;
+    defF[t] = Math.max(0, net); surF[t] = Math.max(0, -net);
+  }
+
+  const buckets = dischargeBuckets(imp, exp, defF, 0, allowExport, cfg)
     .map((b) => ({ ...b }));                  // local copies; qty is mutated
 
   const commit = (b, q) => {
@@ -118,6 +128,14 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
     slotRem[b.t] -= q;
     b.qty -= q;
   };
+
+  // Pack-side cost of refilling at slot t: grid import (deficit slots) or the export
+  // revenue PV surplus would otherwise earn (surplus slots); Infinity where neither applies.
+  const refill = new Float64Array(T);
+  for (let t = 0; t < T; t++) {
+    if (surF[t] > EPS) refill[t] = (allowExport ? Math.max(0, exp[t]) : 0) / cfg.eff + cfg.wearP;
+    else refill[t] = imp[t] <= cfg.maxChgP ? Math.max(0, imp[t]) / cfg.eff + cfg.wearP : Infinity;
+  }
 
   // Pass 1: spend the energy already in the pack on the best-value slots anywhere.
   // It only ever discharges, and it runs first, so the slots it commits are the ones
@@ -129,18 +147,18 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
   // cfg.packEnergyWorth 'refillCost' values a LOAD bucket at no more than the cheapest
   // charge cost before it: load a refill can serve is left to pass 2, so existing energy
   // goes to export and to load before the refill instead of to tomorrow's load.
-  let cheapest = Infinity;
-  for (let t = 0; t < T; t++) if (imp[t] <= cfg.maxChgP) cheapest = Math.min(cheapest, imp[t]);
-  const floor1 = Number.isFinite(cheapest) ? Math.max(0, cheapest) / cfg.eff + cfg.wearP : 0;
+  let floor1 = Infinity;
+  for (let t = 0; t < T; t++) floor1 = Math.min(floor1, refill[t]);
+  if (!Number.isFinite(floor1)) floor1 = 0;
   const sufMin = new Float64Array(T), preMin = new Float64Array(T);
-  for (let t = T - 1, m = Infinity; t >= 0; t--) { sufMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
-  for (let t = 0, m = Infinity; t < T; t++) { preMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
-  const packCost = (p) => (Number.isFinite(p) ? Math.max(0, p) / cfg.eff + cfg.wearP : 0);
+  for (let t = T - 1, m = Infinity; t >= 0; t--) { sufMin[t] = m; m = Math.min(m, refill[t]); }
+  for (let t = 0, m = Infinity; t < T; t++) { preMin[t] = m; m = Math.min(m, refill[t]); }
+  const packCost = (c) => (Number.isFinite(c) ? c : 0);
   const floorAt = (t) => cfg.holdFor === 'never' ? 0
     : cfg.holdFor === 'laterCheaperRefill' ? packCost(sufMin[t]) : floor1;
   const refillCost = cfg.packEnergyWorth === 'refillCost';
   const worth = (b) => refillCost && b.kind === 'load' && Number.isFinite(preMin[b.t])
-    ? Math.min(b.val, packCost(preMin[b.t])) : b.val;
+    ? Math.min(b.val, preMin[b.t]) : b.val;
   const order1 = refillCost ? [...buckets].sort((a, b) => worth(b) - worth(a)) : buckets;
   for (const b of order1) {
     if (worth(b) <= floorAt(b.t) + MARGIN) continue;   // worth less than a refill: hold
@@ -148,53 +166,72 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
     if (q > EPS) commit(b, q);
   }
 
-  // Pass 2: matched charge->discharge pairs, best spread first, trajectory-feasible.
+  // Pass 2a: PV surplus into the pack, best spread first, in every mode — free-ish energy
+  // must never be displaced by a paid grid window.
+  const pvCand = [];
+  for (let t = 0; t < T; t++) {
+    if (surF[t] > EPS) pvCand.push({ t, cost: refill[t], room: Math.min(surF[t], cfg.slotIn), into: pvChg });
+  }
+  pairPass(pvCand, buckets, chg, pvChg, disRaw, slotRem, L, cfg, T);
+
+  // Pass 2b: matched grid-charge -> discharge pairs.
   if (mode === 'contiguous') {
-    contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExport);
+    contiguousPass(L, chg, pvChg, disRaw, slotRem, imp, exp, defF, surF, cfg, allowExport);
   } else {
     const cand = [];
     for (let t = 0; t < T; t++) {
-      if (imp[t] <= cfg.maxChgP) {
-        cand.push({ t, cost: imp[t] / cfg.eff + cfg.wearP, room: chargeInSlot(cfg, loadF[t]) });
+      if (surF[t] <= EPS && imp[t] <= cfg.maxChgP) {
+        cand.push({ t, cost: refill[t], room: chargeInSlot(cfg, defF[t]), into: chg });
       }
     }
-    cand.sort((a, b) => a.cost - b.cost || a.t - b.t);
-    for (const b of buckets) {
-      if (b.qty <= EPS || b.val <= MARGIN) continue;
-      // One-meter rule: a slot is either importing or exporting, never both. Both maps
-      // grow as pairs commit, so the tests are made here, at pair-commit time.
-      if ((chg.get(b.t) || 0) > EPS) continue;          // this slot already charges
-      for (const c of cand) {
-        if (b.qty <= EPS) break;
-        if (b.val <= c.cost + MARGIN) break;  // cand sorted: nothing cheaper left
-        if (c.room <= EPS || c.t >= b.t) continue;
-        if ((disRaw.get(c.t) || 0) > EPS) continue;      // this slot already discharges
-        const head = cfg.cap - maxOver(L, c.t, b.t);
-        const q = Math.min(b.qty, slotRem[b.t], c.room * cfg.eff, head);
-        if (q <= EPS) continue;
-        chg.set(c.t, (chg.get(c.t) || 0) + q / cfg.eff);
-        c.room -= q / cfg.eff;
-        addRange(L, c.t, T, q);           // commit()'s -q spans [b.t, T); this must match to T too
-        commit(b, q);
-      }
-    }
+    pairPass(cand, buckets, chg, pvChg, disRaw, slotRem, L, cfg, T);
   }
 
-  // Netting: within each slot, output covers forecast load before export (one-meter rule).
+  // Netting: within each slot, output covers the forecast deficit before export.
   const discharge = new Map();
   for (const [t, tot] of disRaw) {
-    const load = Math.min(loadF[t], tot);
+    const load = Math.min(defF[t], tot);
     discharge.set(t, { load, export: allowExport ? tot - load : 0 });
   }
   const ts = [...chg.keys()];
-  return { chg, discharge, plannedSoc: L,
+  return { chg, pvChg, discharge, plannedSoc: L,
            window: ts.length ? [Math.min(...ts), Math.max(...ts)] : null };
+}
+
+// Pair charge candidates (grid or PV, pre-sorted by cost) with discharge buckets, best
+// value first, trajectory-feasible. One-meter rule: a slot already charging (grid or PV)
+// takes no discharge, and a slot already discharging takes no charge.
+function pairPass(cand, buckets, chg, pvChg, disRaw, slotRem, L, cfg, T) {
+  cand.sort((a, b) => a.cost - b.cost || a.t - b.t);
+  const commit = (b, q) => {
+    disRaw.set(b.t, (disRaw.get(b.t) || 0) + q);
+    addRange(L, b.t, T, -q);
+    slotRem[b.t] -= q;
+    b.qty -= q;
+  };
+  for (const b of buckets) {
+    if (b.qty <= EPS || b.val <= MARGIN) continue;
+    if ((chg.get(b.t) || 0) > EPS || (pvChg.get(b.t) || 0) > EPS) continue;
+    for (const c of cand) {
+      if (b.qty <= EPS) break;
+      if (b.val <= c.cost + MARGIN) break;  // cand sorted: nothing cheaper left
+      if (c.room <= EPS || c.t >= b.t) continue;
+      if ((disRaw.get(c.t) || 0) > EPS) continue;
+      const head = cfg.cap - maxOver(L, c.t, b.t);
+      const q = Math.min(b.qty, slotRem[b.t], c.room * cfg.eff, head);
+      if (q <= EPS) continue;
+      c.into.set(c.t, (c.into.get(c.t) || 0) + q / cfg.eff);
+      c.room -= q / cfg.eff;
+      addRange(L, c.t, T, q);           // commit()'s -q spans [b.t, T); this must match to T too
+      commit(b, q);
+    }
+  }
 }
 
 // Contiguous mode: one charge window per plan (pass-1 discharge slots inside it are
 // skipped, so the fill can have holes), discharge strictly after it —
 // the same shape solveDay's contiguous branch had, made soc0/trajectory-aware.
-function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExport) {
+function contiguousPass(L, chg, pvChg, disRaw, slotRem, imp, exp, loadF, surF, cfg, allowExport) {
   const T = imp.length;
   // Remaining discharge opportunity from slot s: load already served in pass 1
   // must not be counted again (load-first netting), and per-slot output caps hold.
@@ -231,8 +268,8 @@ function contiguousPass(L, chg, disRaw, slotRem, imp, exp, loadF, cfg, allowExpo
       let rem = target, cost = 0;
       const w = new Map();
       for (let t = i; t < i + len; t++) {
-        // One-meter rule: a slot pass 1 already discharges cannot also import.
-        const add = (disRaw.get(t) || 0) > EPS
+        // One-meter rule: a slot that discharges, PV-charges, or exports surplus cannot import.
+        const add = (disRaw.get(t) || 0) > EPS || (pvChg.get(t) || 0) > EPS || surF[t] > EPS
           ? 0 : Math.min(chargeInSlot(cfg, loadF[t]) * cfg.eff, rem);
         if (add <= EPS) continue;
         cost += (add / cfg.eff) * imp[t] + add * cfg.wearP;

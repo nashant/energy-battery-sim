@@ -396,4 +396,29 @@ import { PvForecaster } from '../js/causal.js';
   ok('pv base null day-1 falls back to day-2', new PvForecaster(pv2).base(50, 50).ac === 0.3);
 }
 
+// ---- solveHorizon with PV: surplus is stored when a later slot beats export, else left to export
+// (solveHorizon and makeCfg are already imported above)
+{
+  const cfg = makeCfg({ capacity: 10, roundTrip: 0.9, dischargeFloorPct: 0, inverterKw: 5 });
+  const T = 8;
+  const imp = [30, 30, 30, 30, 30, 30, 30, 30], exp = [8, 8, 8, 8, 8, 8, 8, 8];
+  const loadF = [0.2, 0.2, 0.2, 0.2, 1.0, 1.0, 1.0, 1.0];
+  const pvF = { ac: new Float64Array([0, 1.2, 1.2, 1.2, 0, 0, 0, 0]), dc: new Float64Array(T) };
+  const plan = solveHorizon(0, imp, exp, loadF, cfg, 'scattered', true, pvF);
+  const pvStored = [...plan.pvChg.values()].reduce((a, b) => a + b, 0);
+  ok('pv: surplus is booked as charge (3 kWh surplus, 3 x 1.0 pack-side)', close(pvStored, 3.0, 1e-9));
+  ok('pv: no grid charge while surplus exports', plan.chg.size === 0);
+  ok('pv: stored energy serves the 30p evening', [...plan.discharge.values()].reduce((a, d) => a + d.load, 0) > 2.6);
+  // export dearer than every later use -> keep exporting, store nothing
+  const expHi = exp.map(() => 40);
+  const p2 = solveHorizon(0, imp, expHi, loadF, cfg, 'scattered', true, pvF);
+  ok('pv: nothing stored when export beats later load', p2.pvChg.size === 0);
+  // no export tariff: surplus is free, so it is stored even for a cheap later slot
+  const p3 = solveHorizon(0, imp.map(() => 5), exp, loadF, cfg, 'contiguous', false, pvF);
+  ok('pv: free surplus stored when it cannot be exported', [...p3.pvChg.values()].reduce((a, b) => a + b, 0) > 2.9);
+  // omitting pvF keeps the old signature working
+  const p4 = solveHorizon(0, imp, exp, loadF, cfg, 'scattered', true);
+  ok('pv: absent pvF -> empty pvChg', p4.pvChg.size === 0);
+}
+
 process.exit(fail ? 1 : 0);

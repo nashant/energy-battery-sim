@@ -22,8 +22,9 @@ export const IMPORT_TARIFFS = {
   },
   go: {
     code: 'GO-VAR-22-10-14', name: 'Octopus Go',
-    note: 'Cheap 00:30–05:30, flat day rate. Requires an EV charged at home ' +
-          '(Smart Tariffs T&Cs §2.1.3) — Octopus can move you off if you do not have one. ' +
+    note: 'Cheap 00:30–05:30, flat day rate. Designed for customers with an EV or plug-in ' +
+          'hybrid charged at home (Smart Tariffs T&Cs §2.1.3) — Octopus can move you to ' +
+          'another tariff if you do not have one. ' +
           'Pairs only with Outgoing SEG, Outgoing Octopus or Agile Outgoing (§2.1.2).',
     exports: ['none', 'seg', 'outgoing-var', 'agile-outgoing', 'flat'],
   },

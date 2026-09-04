@@ -139,4 +139,37 @@ for (const cycle of ['scattered', 'contiguous']) {
   }
 }
 
+// ---- PV: physics invariants on a synthetic sunny year (AC and DC coupling)
+{
+  const T = DAYS * 48;
+  const bell = (i) => { const hh = (i % 48) / 2; return hh > 6 && hh < 18 ? Math.pow(Math.sin(Math.PI * (hh - 6) / 12), 1.5) : 0; };
+  const cloud = (i) => 0.35 + 0.65 * ((Math.floor(i / 48) * 7919) % 97) / 97;      // deterministic per-day factor
+  const actual = new Float64Array(T).map((_, i) => 1.6 * bell(i) * cloud(i));      // ~4 kWp, kWh/half-hour
+  const f1 = actual.map((v, i) => v * (0.8 + 0.4 * (((i * 31) % 53) / 53)));
+  const f2 = actual.map((v, i) => v * (0.7 + 0.6 * (((i * 17) % 59) / 59)));
+  const z = new Float64Array(T);
+  for (const coupling of ['ac', 'dc']) {
+    const pv = coupling === 'ac'
+      ? { ac: actual, dc: z, acF1: f1, acF2: f2, dcF1: z, dcF2: z }
+      : { ac: z, dc: actual, acF1: z, acF2: z, dcF1: f1, dcF2: f2 };
+    const rp = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, cycle: 'contiguous' }, pv });
+    const bal = rp.slots.every((s, i) => Math.abs(s.pvToHouse + s.pvToBattery + s.pvExport + s.pvSpill - actual[i]) < 1e-9);
+    ok(`pv ${coupling}: every slot balances house + battery + export + spill = generation`, bal);
+    ok(`pv ${coupling}: no slot both imports and exports`,
+       rp.slots.every((s) => !(s.gridImp > 1e-9 && s.gridExp > 1e-9)));
+    ok(`pv ${coupling}: some surplus is stored`, rp.pvToBattery > 1);
+    ok(`pv ${coupling}: soc clean`, rp.socViolations === 0);
+    ok(`pv ${coupling}: PV lowers the bill`, rp.energy < r.energy - 10);
+    if (coupling === 'dc') {
+      ok('pv dc: inverter output shared with discharge', rp.slots.every((s, i) =>
+        (actual[i] - s.pvToBattery) - s.pvSpill + s.disLoad + s.disExp <= P.inverterKw * 0.5 + 1e-6));
+    } else {
+      ok('pv ac: total export within the inverter export cap', rp.slots.every((s) => s.gridExp <= P.inverterKw * 0.5 + 1e-6));
+    }
+  }
+  // pv = null keeps today's numbers
+  const r0 = runSim({ usage, load, imp, exp, scTotalP: 0, params: P, pv: null });
+  ok('pv null: unchanged energy', Math.abs(r0.energy - r.energy) < 1e-9 && r0.pvKwh === 0);
+}
+
 process.exit(fail ? 1 : 0);

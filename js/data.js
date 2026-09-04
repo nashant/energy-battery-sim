@@ -2,7 +2,7 @@
 // so wall clock comes from the string and the UTC instant from Date.parse — no timezone
 // library needed, and correct across both DST changeovers.
 
-import { Forecaster, FORECAST_DEFAULTS, solveHorizon } from './causal.js';
+import { Forecaster, PvForecaster, FORECAST_DEFAULTS, solveHorizon } from './causal.js';
 // chargeInSlot is here because runReplay re-checks charge room against ACTUAL load
 // at execution time, not the forecast the plan was built on
 import { makeCfg, chargeInSlot } from './optimiser.js';
@@ -193,7 +193,7 @@ const slotOfDay = (wall) => {
 // horizon) from the current SOC and the latest forecast; the 16:00 publication extends the
 // horizon to the next tariff-day. Each slot executes the plan's first step against ACTUAL
 // load, so the battery follows it only as far as reality allows. Exported for tests.
-export function runReplay(usage, load, imp, exp, cfg, params) {
+export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
   const T = load.length;
   const mode = params.cycle || 'contiguous';
   const allowExport = !!params.allowExport;
@@ -204,6 +204,8 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
   for (let i = 0; i < T; i++) dayEnd.set(agileKey[i], i + 1);
 
   const fc = new Forecaster();
+  const fcPv = pv ? new PvForecaster(pv) : null;
+  const pvAt = (i, k) => (pv ? pv[k][i] : 0);           // k: 'ac' | 'dc'
   const slots = new Array(T);
   let soc = 0, replans = 0;
   let plan = null, planStart = 0, planMaxChgP = 0;      // plan covers [planStart, horizon)
@@ -224,7 +226,8 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     const expS = known
       ? exp.slice(i, h).map((v, k) => { let t = i + k; while (t >= pubEnd) t -= 48; return exp[t]; })
       : exp.slice(i, h);
-    plan = solveHorizon(soc, imp.slice(i, h), expS, loadF, cfg, mode, allowExport);
+    const pvF = fcPv ? fcPv.forecast(i, h, calKey) : null;
+    plan = solveHorizon(soc, imp.slice(i, h), expS, loadF, cfg, mode, allowExport, pvF);
     planStart = i; horizon = h; replans++;
     // marginal refill price: the dearest slot the plan charges in. A plan that books no
     // charging (pack already full for its horizon) keeps the last booked price, so
@@ -244,40 +247,77 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
       (i === 0 || usage.wall[i - 1].slice(11, 16) < PUBLISH_HHMM ||
        calKey[i - 1] !== calKey[i]);
 
-    // execute the active plan against ACTUAL load
-    let cin = 0, dl = 0, dx = 0, plannedSoc = null;
+    // execute the active plan against ACTUAL load and ACTUAL PV
+    const pA = pvAt(i, 'ac'), pD = pvAt(i, 'dc');
+    let cin = 0, pvcDc = 0, pvcAc = 0, dl = 0, dx = 0, plannedSoc = null;
+    let room = Math.max(0, (cfg.cap - soc) / cfg.eff);                 // AC/DC-side kWh the pack can take
     if (plan && i >= planStart && i < horizon) {
       const n = i - planStart;
-      const room = chargeInSlot(cfg, load[i]);          // import cap vs ACTUAL load
-      cin = Math.min(plan.chg.get(n) || 0, room, (cfg.cap - soc) / cfg.eff);
-      const dd = plan.discharge.get(n);
-      if (dd) {
-        const q = Math.min(dd.load + dd.export, soc + cin * cfg.eff, cfg.slotOut);
-        dl = Math.min(load[i], q);
-        // export only what the plan booked as export: load the forecast over-predicted
-        // stays in the pack for a later slot rather than leaving at whatever exp[i] is
-        dx = allowExport ? Math.min(q - dl, dd.export, cfg.exportSlot) : 0;
-      }
+      // 1. PV into the pack: DC first (no inverter pass), then AC through the charge path
+      const pvcPlan = plan.pvChg.get(n) || 0;
+      pvcDc = Math.min(pvcPlan, pD, cfg.slotIn, room);
+      pvcAc = Math.min(pvcPlan - pvcDc, pA, cfg.slotIn - pvcDc, room - pvcDc);
       plannedSoc = plan.plannedSoc[n] + cfg.reserve;
     }
-    // Self-use load-following: between planned actions the inverter covers the slot's
-    // ACTUAL load from the pack — but only when the avoided import price beats the
-    // plan's marginal refill cost (dearest planned charge, pack-side), and never while
-    // charging (the battery can't do both). An empty pack makes this a no-op.
-    if (cin <= 1e-12 && imp[i] > planMaxChgP / cfg.eff + cfg.wearP + 1e-9) {
-      const extra = Math.min(load[i] - dl, soc - dl - dx, cfg.slotOut - dl - dx);
+    const pvc = pvcDc + pvcAc;
+    room -= pvc;
+    // 2. what PV is left serves the house; the DC remainder crosses the inverter later
+    let dcRest = pD - pvcDc;
+    const acRest = pA - pvcAc;
+    let gross = acRest + dcRest;
+    let def = Math.max(0, load[i] - gross), sur = Math.max(0, gross - load[i]);
+    if (plan && i >= planStart && i < horizon) {
+      const n = i - planStart;
+      // 3. grid charge only when nothing is being exported (one-meter rule)
+      if (sur <= 1e-12) cin = Math.min(plan.chg.get(n) || 0, chargeInSlot(cfg, def), room);
+      // 4. discharge: actual deficit first, then what the plan booked as export. Only the
+      // booked export leaves: load the forecast over-predicted stays in the pack for a
+      // later slot rather than leaving at whatever exp[i] is.
+      const dd = plan.discharge.get(n);
+      if (dd) {
+        const q = Math.min(dd.load + dd.export, soc + (cin + pvc) * cfg.eff, cfg.slotOut);
+        dl = Math.min(def, q);
+        dx = allowExport ? Math.min(q - dl, dd.export, cfg.exportSlot) : 0;
+      }
+    }
+    // 5. self-use load-following on the remaining deficit (never while charging): between
+    // planned actions the inverter covers what PV did not, but only when the avoided
+    // import price beats the plan's marginal refill cost (dearest planned charge,
+    // pack-side). An empty pack makes this a no-op.
+    const lfFloor = planMaxChgP / cfg.eff + cfg.wearP;
+    if (cin <= 1e-12 && pvc <= 1e-12 && imp[i] > lfFloor + 1e-9) {
+      const extra = Math.min(def - dl, soc - dl - dx, cfg.slotOut - dl - dx);
       if (extra > 1e-12) dl += extra;
     }
-    soc += cin * cfg.eff - dl - dx;
+    // 6. DC coupling: PV that is not charging shares the inverter's AC output with discharge
+    const dcClip = Math.max(0, dcRest + dl + dx - cfg.slotOut);
+    if (dcClip > 1e-12) {
+      dcRest -= dcClip; gross = acRest + dcRest;
+      def = Math.max(0, load[i] - gross); sur = Math.max(0, gross - load[i]);   // dl <= old def <= new def
+      // the clip re-exposes deficit PV was covering. Serve it from the pack's booked
+      // export instead of importing and exporting in the same half-hour: the pack-side
+      // total is unchanged, so the inverter cap and the SOC trajectory still hold.
+      const shift = Math.min(def - dl, dx);
+      if (shift > 1e-12) { dl += shift; dx -= shift; }
+    }
+    // 7. PV surplus: export under the G100 cap (shared with battery export), else spill
+    const pvx = allowExport ? Math.min(sur, Math.max(0, cfg.exportSlot - dx)) : 0;
+    const spill = sur - pvx + dcClip;
+    soc += (cin + pvc) * cfg.eff - dl - dx;
 
-    slots[i] = { i, cin, dl, dx, soc, plannedSoc };
+    slots[i] = { i, cin, pvc, dl, dx, pvx, spill, soc, plannedSoc,
+                 def, pvHouse: Math.min(load[i], gross) };
 
     // settle: forecaster learns the actual, day buffer fills
     const sd = slotOfDay(usage.wall[i]);
     fc.settle(calKey[i], sd, load[i]);
+    if (fcPv) fcPv.settle(i);
     dayBuf[sd] = dayBuf[sd] === null ? load[i] : (dayBuf[sd] + load[i]) / 2;  // DST repeat: average
     const dayDone = i + 1 === T || calKey[i + 1] !== calKey[i];
-    if (dayDone) { fc.completeDay(calKey[i], dayBuf); dayBuf = new Array(48).fill(null); }
+    if (dayDone) {
+      fc.completeDay(calKey[i], dayBuf); dayBuf = new Array(48).fill(null);
+      if (fcPv) fcPv.completeDay();
+    }
 
     // Receding horizon: re-plan at the start of every slot (or every `replanEvery`
     // slots; publication and plan expiry always replan) from the current SOC and the
@@ -300,21 +340,27 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
 
 // params.boundary is ignored: the replay's horizons come from the tariff day and the
 // 16:00 publication, not from a user-chosen window boundary.
-export function runSim({ usage, load, imp, exp, scTotalP, params }) {
+export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
   const cfg = makeCfg(params);
-  const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params);
+  const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params, pv);
 
   // presentation is always calendar days: costs are per-slot, so any grouping sums exactly
   const slots = new Array(load.length);
   const byDate = new Map();
   let maxExportSlot = 0, violations = 0;
+  const allowX = !!params.allowExport;
 
   for (let i = 0; i < load.length; i++) {
-    const { cin, dl, dx, soc, plannedSoc } = exec[i];
+    const { cin, pvc, dl, dx, pvx, spill, soc, plannedSoc, def, pvHouse } = exec[i];
     if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
-    const gImp = load[i] + cin - dl;
-    const slotP = gImp * imp[i] - dx * exp[i];
-    maxExportSlot = Math.max(maxExportSlot, dx);
+    const gImp = def + cin - dl;                       // deficit after PV, plus grid charge, less discharge
+    const gExp = dx + pvx;
+    const slotP = gImp * imp[i] - gExp * exp[i];
+    // no-battery baseline: PV serves the house, surplus exports under the cap (DC clipped by the inverter)
+    const pvOnly = pv ? Math.min(load[i], pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut)) : 0;
+    const pvOnlyExp = pv && allowX ? Math.min(pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut) - pvOnly, cfg.exportSlot) : 0;
+    const baseSlotP = (load[i] - pvOnly) * imp[i] - pvOnlyExp * exp[i];
+    maxExportSlot = Math.max(maxExportSlot, gExp);
     const date = usage.wall[i].slice(0, 10);
     const hhmm = usage.wall[i].slice(11);
     let d = byDate.get(date);
@@ -323,7 +369,8 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
       byDate.set(date, d);
     }
     d.kwh += load[i];
-    d.baseP += load[i] * imp[i];
+    d.baseP += baseSlotP;
+    d.pv = (d.pv || 0) + (pv ? pv.ac[i] + pv.dc[i] : 0);
     d.costP += slotP;
     d.kwhOut += dl + dx;
     if (cin > 1e-9) {
@@ -334,8 +381,10 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
       day: date, wall: usage.wall[i], hhmm,
       imp: imp[i], exp: exp[i], load: load[i], chg: cin,
       disLoad: dl, disExp: dx,
-      gridImp: Math.max(0, gImp), gridExp: dx,
-      gridToHouse: Math.max(0, load[i] - dl),
+      pvGen: pv ? pv.ac[i] + pv.dc[i] : 0, pvToHouse: pvHouse,
+      pvToBattery: pvc, pvExport: pvx, pvSpill: spill,
+      gridImp: Math.max(0, gImp), gridExp: gExp,
+      gridToHouse: Math.max(0, def - dl),
       soc: Math.max(0, soc) + cfg.reserve,
       socPct: cfg.cap + cfg.reserve
         ? 100 * (Math.max(0, soc) + cfg.reserve) / (cfg.cap + cfg.reserve) : 0,
@@ -345,7 +394,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
   }
   const perDay = [...byDate.values()].map((d) => ({
     day: d.day, kwh: d.kwh, baseP: d.baseP, costP: d.costP,
-    savedP: d.baseP - d.costP, kwhOut: d.kwhOut,
+    savedP: d.baseP - d.costP, kwhOut: d.kwhOut, pv: d.pv || 0,
     window: d.w0 !== null ? [d.w0, d.w1] : null,
     used: d.kwhOut > 1e-9,
   }));
@@ -369,6 +418,11 @@ export function runSim({ usage, load, imp, exp, scTotalP, params }) {
     utilisation: 100 * (cycled / Math.max(1, perDay.length)) / cfg.cap,
     maxExportSlot, socViolations: violations,
     wear, wearP: cfg.wearP, stored,
+    pvKwh: slots.reduce((a, s) => a + s.pvGen, 0),
+    pvToHouse: slots.reduce((a, s) => a + s.pvToHouse, 0),
+    pvToBattery: slots.reduce((a, s) => a + s.pvToBattery, 0),
+    pvExport: slots.reduce((a, s) => a + s.pvExport, 0),
+    pvSpill: slots.reduce((a, s) => a + s.pvSpill, 0),
     warmupDays, replans,
     perDay, slots,
   };

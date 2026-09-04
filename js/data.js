@@ -253,8 +253,10 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
     let room = Math.max(0, (cfg.cap - soc) / cfg.eff);                 // AC/DC-side kWh the pack can take
     if (plan && i >= planStart && i < horizon) {
       const n = i - planStart;
-      // 1. PV into the pack: DC first (no inverter pass), then AC through the charge path
-      const pvcPlan = plan.pvChg.get(n) || 0;
+      // 1. PV into the pack: DC first (no inverter pass), then AC through the charge path.
+      // Bounded by the ACTUAL surplus as well as the plan's: when load beats the forecast
+      // the house gets the PV, or the slot would import to store energy priced at export.
+      const pvcPlan = Math.min(plan.pvChg.get(n) || 0, Math.max(0, pA + pD - load[i]));
       pvcDc = Math.min(pvcPlan, pD, cfg.slotIn, room);
       pvcAc = Math.min(pvcPlan - pvcDc, pA, cfg.slotIn - pvcDc, room - pvcDc);
       plannedSoc = plan.plannedSoc[n] + cfg.reserve;
@@ -291,15 +293,14 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
     }
     // 6. DC coupling: PV that is not charging shares the inverter's AC output with discharge
     const dcClip = Math.max(0, dcRest + dl + dx - cfg.slotOut);
-    if (dcClip > 1e-12) {
-      dcRest -= dcClip; gross = acRest + dcRest;
-      def = Math.max(0, load[i] - gross); sur = Math.max(0, gross - load[i]);   // dl <= old def <= new def
-      // the clip re-exposes deficit PV was covering. Serve it from the pack's booked
-      // export instead of importing and exporting in the same half-hour: the pack-side
-      // total is unchanged, so the inverter cap and the SOC trajectory still hold.
-      const shift = Math.min(def - dl, dx);
-      if (shift > 1e-12) { dl += shift; dx -= shift; }
-    }
+    dcRest -= dcClip; gross = acRest + dcRest;
+    def = Math.max(0, load[i] - gross); sur = Math.max(0, gross - load[i]);   // dl <= old def <= new def
+    // the clip re-exposes deficit PV was covering. Serve it from the pack's booked export
+    // instead of importing and exporting in the same half-hour: the pack-side total is
+    // unchanged, so the inverter cap and the SOC trajectory still hold. A no-op without a
+    // clip: step 4 leaves dx > 0 only where dl already covers the whole deficit.
+    const shift = Math.min(def - dl, dx);
+    if (shift > 1e-12) { dl += shift; dx -= shift; }
     // 7. PV surplus: export under the G100 cap (shared with battery export), else spill
     const pvx = allowExport ? Math.min(sur, Math.max(0, cfg.exportSlot - dx)) : 0;
     const spill = sur - pvx + dcClip;
@@ -365,12 +366,12 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     const hhmm = usage.wall[i].slice(11);
     let d = byDate.get(date);
     if (!d) {
-      d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, w0: null, w1: null };
+      d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, pv: 0, w0: null, w1: null };
       byDate.set(date, d);
     }
     d.kwh += load[i];
     d.baseP += baseSlotP;
-    d.pv = (d.pv || 0) + (pv ? pv.ac[i] + pv.dc[i] : 0);
+    d.pv += pv ? pv.ac[i] + pv.dc[i] : 0;
     d.costP += slotP;
     d.kwhOut += dl + dx;
     if (cin > 1e-9) {
@@ -394,13 +395,14 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
   }
   const perDay = [...byDate.values()].map((d) => ({
     day: d.day, kwh: d.kwh, baseP: d.baseP, costP: d.costP,
-    savedP: d.baseP - d.costP, kwhOut: d.kwhOut, pv: d.pv || 0,
+    savedP: d.baseP - d.costP, kwhOut: d.kwhOut, pv: d.pv,
     window: d.w0 !== null ? [d.w0, d.w1] : null,
     used: d.kwhOut > 1e-9,
   }));
 
   const energy = perDay.reduce((a, d) => a + d.costP, 0) / 100;
-  const stored = exec.reduce((a, s) => a + s.cin, 0) * cfg.eff;     // pack-kWh charged
+  // pack-kWh charged: PV cycles the pack exactly as grid import does, so both wear it
+  const stored = exec.reduce((a, s) => a + s.cin + s.pvc, 0) * cfg.eff;
   const wear = stored * cfg.wearP / 100;                             // £, not in `energy`
   const baseline = perDay.reduce((a, d) => a + d.baseP, 0) / 100;
   const cycled = perDay.reduce((a, d) => a + d.kwhOut, 0);

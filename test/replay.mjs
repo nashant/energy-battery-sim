@@ -1,6 +1,7 @@
 // Offline invariants: a synthetic no-DST year, plus a short run carrying real 46- and
 // 50-slot DST days. No network, no CSV.
 import { runSim } from '../js/data.js';
+import { makeCfg } from '../js/optimiser.js';   // cfg.eff, for the PV wear assertion
 
 let fail = 0;
 const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`); if (!cond) fail++; };
@@ -148,28 +149,67 @@ for (const cycle of ['scattered', 'contiguous']) {
   const f1 = actual.map((v, i) => v * (0.8 + 0.4 * (((i * 31) % 53) / 53)));
   const f2 = actual.map((v, i) => v * (0.7 + 0.6 * (((i * 17) % 59) / 59)));
   const z = new Float64Array(T);
+  const mkPv = (coupling) => (coupling === 'ac'
+    ? { ac: actual, dc: z, acF1: f1, acF2: f2, dcF1: z, dcF2: z }
+    : { ac: z, dc: actual, acF1: z, acF2: z, dcF1: f1, dcF2: f2 });
+  const cfgP = makeCfg(P);
+  const balanced = (rp) => rp.slots.every((s, i) =>
+    Math.abs(s.pvToHouse + s.pvToBattery + s.pvExport + s.pvSpill - actual[i]) < 1e-9);
+  const bothWays = (rp) => rp.slots.every((s) => !(s.gridImp > 1e-9 && s.gridExp > 1e-9));
   for (const coupling of ['ac', 'dc']) {
-    const pv = coupling === 'ac'
-      ? { ac: actual, dc: z, acF1: f1, acF2: f2, dcF1: z, dcF2: z }
-      : { ac: z, dc: actual, acF1: z, acF2: z, dcF1: f1, dcF2: f2 };
+    const pv = mkPv(coupling);
     const rp = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, cycle: 'contiguous' }, pv });
-    const bal = rp.slots.every((s, i) => Math.abs(s.pvToHouse + s.pvToBattery + s.pvExport + s.pvSpill - actual[i]) < 1e-9);
-    ok(`pv ${coupling}: every slot balances house + battery + export + spill = generation`, bal);
-    ok(`pv ${coupling}: no slot both imports and exports`,
-       rp.slots.every((s) => !(s.gridImp > 1e-9 && s.gridExp > 1e-9)));
+    ok(`pv ${coupling}: every slot balances house + battery + export + spill = generation`, balanced(rp));
+    ok(`pv ${coupling}: totals balance too`,
+       Math.abs(rp.pvToHouse + rp.pvToBattery + rp.pvExport + rp.pvSpill - rp.pvKwh) < 1e-6);
+    ok(`pv ${coupling}: no slot both imports and exports`, bothWays(rp));
+    // PV charging is bounded by the ACTUAL surplus, so no slot ever imports to store PV
+    ok(`pv ${coupling}: never imports while storing PV`,
+       rp.slots.every((s) => !(s.pvToBattery > 1e-9 && s.gridImp > 1e-9)));
     ok(`pv ${coupling}: some surplus is stored`, rp.pvToBattery > 1);
+    ok(`pv ${coupling}: wear counts PV charging`,
+       rp.stored >= rp.pvToBattery * cfgP.eff - 1e-9 && rp.stored > 0);
     ok(`pv ${coupling}: soc clean`, rp.socViolations === 0);
     ok(`pv ${coupling}: PV lowers the bill`, rp.energy < r.energy - 10);
     if (coupling === 'dc') {
-      ok('pv dc: inverter output shared with discharge', rp.slots.every((s, i) =>
-        (actual[i] - s.pvToBattery) - s.pvSpill + s.disLoad + s.disExp <= P.inverterKw * 0.5 + 1e-6));
+      // The inverter's AC output is the DC generation less what charged the pack DC-side
+      // and less what the inverter clipped, shared with discharge. pvSpill lumps the clip
+      // together with export-cap spill, so first pin down that the cap never binds here
+      // (pvExport + disExp stays under it) — then pvSpill IS the clip and the form below is
+      // exactly the AC output, not a bound slack by the cap spill.
+      ok('pv dc: export cap never binds, so spill is inverter clipping alone',
+         rp.slots.every((s) => s.pvExport + s.disExp < cfgP.exportSlot - 1e-9));
+      const acOut = rp.slots.map((s) => s.pvGen - s.pvToBattery - s.pvSpill + s.disLoad + s.disExp);
+      ok('pv dc: inverter output shared with discharge',
+         acOut.every((v) => v <= P.inverterKw * 0.5 + 1e-6));
+      ok('pv dc: the shared inverter output is actually reached',
+         Math.max(...acOut) > P.inverterKw * 0.5 - 1e-6 && rp.slots.some((s) => s.pvSpill > 1e-9));
     } else {
       ok('pv ac: total export within the inverter export cap', rp.slots.every((s) => s.gridExp <= P.inverterKw * 0.5 + 1e-6));
     }
   }
+  // export disabled: PV still serves the house and charges, but nothing leaves the property
+  for (const coupling of ['ac', 'dc']) {
+    const rq = runSim({ usage, load, imp, exp, scTotalP: 0,
+                        params: { ...P, cycle: 'contiguous', allowExport: false }, pv: mkPv(coupling) });
+    ok(`pv ${coupling} no-export: slots still balance`, balanced(rq));
+    ok(`pv ${coupling} no-export: nothing is exported`,
+       rq.pvExport === 0 && rq.slots.every((s) => s.pvExport === 0 && s.gridExp <= 1e-12));
+    ok(`pv ${coupling} no-export: no slot both imports and exports`, bothWays(rq));
+  }
+  // whole-house import cap: charge room is re-checked against the deficit AFTER PV
+  {
+    const rl = runSim({ usage, load, imp, exp, scTotalP: 0,
+                        params: { ...P, cycle: 'contiguous', totalImportLimitKw: 6 }, pv: mkPv('ac') });
+    ok('pv import cap: no slot imports past the whole-house limit',
+       rl.slots.every((s) => s.gridImp <= 3 + 1e-9));
+    ok('pv import cap: run stays clean', rl.socViolations === 0 && balanced(rl));
+  }
   // pv = null keeps today's numbers
   const r0 = runSim({ usage, load, imp, exp, scTotalP: 0, params: P, pv: null });
   ok('pv null: unchanged energy', Math.abs(r0.energy - r.energy) < 1e-9 && r0.pvKwh === 0);
+  ok('pv null: every PV total is zero', r0.pvToHouse === 0 && r0.pvToBattery === 0 &&
+     r0.pvExport === 0 && r0.pvSpill === 0);
 }
 
 process.exit(fail ? 1 : 0);

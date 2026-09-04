@@ -295,8 +295,14 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
       const extra = Math.min(def - dl, soc - dl - dx, cfg.slotOut - dl - dx);
       if (extra > 1e-12) dl += extra;
     }
-    // 6. DC coupling: PV that is not charging shares the inverter's AC output with discharge
-    const dcClip = Math.max(0, dcRest + dl + dx - cfg.slotOut);
+    // 6. DC coupling: PV that is not charging shares the inverter's AC output with
+    // discharge. The overflow comes off battery export FIRST — holding a kWh in the pack
+    // is worth >= 0 later, while clipped PV is gone for good — and only what is left
+    // clips the PV.
+    let over = Math.max(0, dcRest + dl + dx - cfg.slotOut);
+    const trim = Math.min(dx, over);
+    dx -= trim; over -= trim;
+    const dcClip = over;
     dcRest -= dcClip; gross = acRest + dcRest;
     def = Math.max(0, load[i] - gross); sur = Math.max(0, gross - load[i]);   // dl <= old def <= new def
     // the clip re-exposes deficit PV was covering. Serve it from the pack's booked export
@@ -305,8 +311,11 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
     // clip: step 4 leaves dx > 0 only where dl already covers the whole deficit.
     const shift = Math.min(def - dl, dx);
     if (shift > 1e-12) { dl += shift; dx -= shift; }
-    // 7. PV surplus: export under the G100 cap (shared with battery export), else spill
-    const pvx = allowExport ? Math.min(sur, Math.max(0, cfg.exportSlot - dx)) : 0;
+    // 7. PV surplus takes the connection's export capacity first: free PV that would
+    // otherwise be spilled beats stored energy, which keeps its value in the pack. What
+    // the battery does not export simply is not removed from soc.
+    const pvx = allowExport ? Math.min(sur, cfg.exportCap) : 0;
+    dx = Math.min(dx, Math.max(0, cfg.exportCap - pvx));
     const spill = sur - pvx + dcClip;
     soc += (cin + pvc) * cfg.eff - dl - dx;
 
@@ -363,7 +372,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     const slotP = gImp * imp[i] - gExp * exp[i];
     // no-battery baseline: PV serves the house, surplus exports under the cap (DC clipped by the inverter)
     const pvOnly = pv ? Math.min(load[i], pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut)) : 0;
-    const pvOnlyExp = pv && allowX ? Math.min(pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut) - pvOnly, cfg.exportSlot) : 0;
+    const pvOnlyExp = pv && allowX ? Math.min(pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut) - pvOnly, cfg.exportCap) : 0;
     const baseSlotP = (load[i] - pvOnly) * imp[i] - pvOnlyExp * exp[i];
     maxExportSlot = Math.max(maxExportSlot, gExp);
     const date = usage.wall[i].slice(0, 10);

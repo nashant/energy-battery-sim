@@ -58,7 +58,10 @@ def make_cfg(p):
         'chgStep': inv_slot * p['roundTrip'],
         'importCap': p['totalImportLimitKw'] * 0.5 if p.get('totalImportLimitKw') else None,
         'maxChgP': INF if mcp is None or mcp == '' else float(mcp),
+        # the battery's own per-slot export bound; exportCap is the connection's total
+        # (G100), Infinity when no limit is entered
         'exportSlot': p['exportLimitKw'] * 0.5 if p.get('exportLimitKw') else inv_slot,
+        'exportCap': p['exportLimitKw'] * 0.5 if p.get('exportLimitKw') else INF,
         # planner options (README "Planner options"); defaults are the shipped behaviour
         'holdFor': p.get('holdFor') or 'anyCheaperRefill',
         'packEnergyWorth': p.get('packEnergyWorth') or 'displacedPrice',
@@ -651,8 +654,14 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
             if extra > 1e-12:
                 dl += extra
         # 6. DC coupling: PV that is not charging shares the inverter's AC output with
-        # discharge
-        dc_clip = max(0, dc_rest + dl + dx - cfg['slotOut'])
+        # discharge. The overflow comes off battery export FIRST — holding a kWh in the
+        # pack is worth >= 0 later, while clipped PV is gone for good — and only what is
+        # left clips the PV.
+        over = max(0, dc_rest + dl + dx - cfg['slotOut'])
+        trim = min(dx, over)
+        dx -= trim
+        over -= trim
+        dc_clip = over
         dc_rest -= dc_clip
         gross = ac_rest + dc_rest
         deficit = max(0, load[i] - gross)
@@ -664,8 +673,11 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
         if shift > 1e-12:
             dl += shift
             dx -= shift
-        # 7. PV surplus: export under the G100 cap (shared with battery export), else spill
-        pvx = min(sur, max(0, cfg['exportSlot'] - dx)) if allow_export else 0
+        # 7. PV surplus takes the connection's export capacity first: free PV that would
+        # otherwise be spilled beats stored energy, which keeps its value in the pack.
+        # What the battery does not export simply is not removed from soc.
+        pvx = min(sur, cfg['exportCap']) if allow_export else 0
+        dx = min(dx, max(0, cfg['exportCap'] - pvx))
         spill = sur - pvx + dc_clip
         soc += (cin + pvc) * cfg['eff'] - dl - dx
 

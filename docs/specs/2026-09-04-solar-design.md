@@ -88,7 +88,8 @@ At slot i, with actual `L`, `ac`, `dc`:
 1. `netA = L − ac − dc`.
 2. Planned grid charge `cin` executes only if `netA ≥ 0` (a surplus slot cannot import);
    planned PV charge `pvc` executes as `min(planned, surplus, room)`; any surplus above that
-   is exported up to `exportSlot` (less battery export), the rest spilled.
+   is exported up to `exportCap` (the connection's G100 limit, taken by PV before battery
+   export), the rest spilled.
 3. Discharge covers the actual deficit first (`dl = min(netA⁺, q)`), then booked export.
 4. Load-following covers remaining deficit under the same price gate as today.
 5. Flows recorded per slot: `pvToHouse = min(L, P)`, `pvToBattery`, `pvExport`, `pvSpill`,
@@ -96,10 +97,12 @@ At slot i, with actual `L`, `ac`, `dc`:
 
 DC coupling: `dc` energy first charges the pack, bounded by the battery charge rate (the
 inverter's `slotIn` is used as that rate), or serves load/export through the inverter's AC
-output, which it **shares with discharge**: `dcOut + dl + dx ≤ slotOut`. DC energy above
-both bounds is spilled (the hybrid inverter clips it). AC coupling: `ac` is independent of the battery inverter; PV
-→ battery uses the inverter's charge path (bounded by `slotIn`) and total export
-`pvExport + dx ≤ exportSlot`.
+output, which it **shares with discharge**: `dcOut + dl + dx ≤ slotOut`. Contention there
+comes off battery export first (a held kWh keeps its value; clipped PV is lost), and DC
+energy above both bounds is spilled (the hybrid inverter clips it). AC coupling: `ac` is
+independent of the battery inverter; PV → battery uses the inverter's charge path (bounded
+by `slotIn`) and total export `pvExport + dx ≤ exportCap` — the connection limit, which is
+unbounded when none is entered, while `dx ≤ exportSlot` remains the battery's own bound.
 
 ### Forecaster
 
@@ -183,7 +186,8 @@ Panel **7 · Solar**, after 6 · Heat pump:
 - Causality guard passes with the PV garbling rules.
 - Physics asserted in `test/replay.mjs` on a synthetic sunny year: `pvToHouse + pvToBattery
   + pvExport + pvSpill = P` every slot; no slot both imports and exports; DC case respects
-  `dcOut + dl + dx ≤ slotOut`; AC case respects `pvExport + dx ≤ exportSlot`.
+  `dcOut + dl + dx ≤ slotOut`; AC case respects `pvExport + dx ≤ exportCap`, and with a
+  connection cap set no slot spills PV while the battery exports.
 - Scorer on the user's year, south wall 4 kWp, Agile and Go: battery-only vs battery + PV,
   with and without export, compared against the pre-engine estimate (PV adds ~£390-410/yr
   on ERA5 numbers; expect ~20% less on the UK model).

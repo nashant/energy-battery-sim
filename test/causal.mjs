@@ -43,6 +43,10 @@ for (const c of cases) {
   const load2 = c.load.map((v, i) => (i >= CUT ? 17 : v));
   // PV: actual is garbage from the cut; a forecast value is garbage from the slot whose
   // forecast would have been ISSUED at/after the cut (day-1: cut + 48, day-2: cut + 96).
+  // This guard cannot tell the +48 boundary from the +96 one: every plan issued before
+  // REVEAL has a horizon ending at CUT, and no horizon of <= 48 slots ever needs F2 — so
+  // a rule as loose as `t - 96 <= now` would pass here. The lead-time rule itself is
+  // pinned by the PvForecaster unit tests in test/units.mjs ("pv base boundary").
   const garble = (arr, from) => arr && arr.map((v, i) => (i >= from ? 7 : v));
   const pv2 = c.pv && {
     ac: garble(c.pv.ac, CUT), dc: garble(c.pv.dc, CUT),

@@ -308,6 +308,17 @@ ok('roi null on non-finite saving', roiPct(3500, NaN) === null);
      close(makeCfg({ ...base, dischargeFloorPct: 0, cycleLife: 8000 }).wearP, 350000 / (8000 * 32)));
 }
 
+// ---- connection export cap vs the battery's own export bound. exportCap is the G100
+// limit on everything leaving the property; with none entered nothing physical caps an
+// AC-coupled array's export at the battery inverter's size, so it is Infinity.
+{
+  const base = { capacity: 10, roundTrip: 0.9, dischargeFloorPct: 0, inverterKw: 5 };
+  ok('exportCap is Infinity with no export limit',
+     makeCfg({ ...base, exportLimitKw: null }).exportCap === Infinity);
+  ok('exportCap is the half-hour kWh of the limit', makeCfg({ ...base, exportLimitKw: 3.0 }).exportCap === 1.5);
+  ok('exportSlot still falls back to the inverter', makeCfg({ ...base, exportLimitKw: null }).exportSlot === 2.5);
+}
+
 // ---- tariff pairings: js/tariffs.js `exports` lists mirror the Smart Tariffs T&Cs
 import { IMPORT_TARIFFS, EXPORT_TARIFFS } from '../js/tariffs.js';
 const tariffExports = (k) => IMPORT_TARIFFS[k].exports;
@@ -362,6 +373,8 @@ ok('azimuth: 191 -> 11', bearingToAzimuth(191) === 11);
   ok('kWh: 500 W/m2 on 4 kWp at 14% loss = 0.86 kWh/half-hour', close(k[1], 0.5 * 4 * 0.86 * 0.5));
   ok('kWh: AC inverter clips at 3.68 kW -> 1.84 kWh', close(k[3], 1.84) && close(k[2], 1.72));
   ok('kWh: DC array is not clipped here', close(arrayKwh([1200], { ...arr, coupling: 'dc' })[0], 1.2 * 4 * 0.86 * 0.5));
+  // sumArrays buckets anything not 'dc' as AC, so arrayKwh must clip it as AC too
+  ok('kWh: anything not DC is clipped like AC', close(arrayKwh([1200], { ...arr, coupling: 'weird' })[0], 1.84));
   ok('kWh: null irradiance is 0', arrayKwh([null], arr)[0] === 0);
 }
 {

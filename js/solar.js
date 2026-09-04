@@ -44,7 +44,9 @@ export function alignToUsage(map, instants) {
 
 export function arrayKwh(gti, arr) {
   const derate = 1 - (arr.lossPct ?? 14) / 100;
-  const cap = arr.coupling === 'ac' && arr.inverterKw > 0 ? arr.inverterKw * 0.5 : Infinity;
+  // anything not explicitly DC is AC — the same rule sumArrays buckets by, so a
+  // malformed coupling is clipped by the inverter it is summed under
+  const cap = arr.coupling !== 'dc' && arr.inverterKw > 0 ? arr.inverterKw * 0.5 : Infinity;
   return gti.map((w) => Math.min(cap, (w || 0) * 0.5 / 1000 * arr.kwp * derate));
 }
 

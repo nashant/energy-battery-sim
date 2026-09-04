@@ -175,17 +175,23 @@ for (const cycle of ['scattered', 'contiguous']) {
       // The inverter's AC output is the DC generation less what charged the pack DC-side
       // and less what the inverter clipped, shared with discharge. pvSpill lumps the clip
       // together with export-cap spill, so first pin down that the cap never binds here
-      // (pvExport + disExp stays under it) — then pvSpill IS the clip and the form below is
-      // exactly the AC output, not a bound slack by the cap spill.
+      // (no connection limit is set, so exportCap is Infinity) — then pvSpill IS the clip
+      // and the form below is exactly the AC output, not a bound slackened by cap spill.
       ok('pv dc: export cap never binds, so spill is inverter clipping alone',
-         rp.slots.every((s) => s.pvExport + s.disExp < cfgP.exportSlot - 1e-9));
+         cfgP.exportCap === Infinity && rp.slots.every((s) => s.pvExport + s.disExp < cfgP.exportCap));
       const acOut = rp.slots.map((s) => s.pvGen - s.pvToBattery - s.pvSpill + s.disLoad + s.disExp);
       ok('pv dc: inverter output shared with discharge',
          acOut.every((v) => v <= P.inverterKw * 0.5 + 1e-6));
       ok('pv dc: the shared inverter output is actually reached',
-         Math.max(...acOut) > P.inverterKw * 0.5 - 1e-6 && rp.slots.some((s) => s.pvSpill > 1e-9));
+         Math.max(...acOut) > P.inverterKw * 0.5 - 1e-6);
+      // generation alone never fills the inverter here, so every overflow is contention
+      // with discharge — absorbed by trimming battery export, never by spilling PV
+      ok('pv dc: contention with discharge spills no PV', rp.pvSpill === 0);
     } else {
-      ok('pv ac: total export within the inverter export cap', rp.slots.every((s) => s.gridExp <= P.inverterKw * 0.5 + 1e-6));
+      // no connection cap here, so only the battery's own export is inverter-bound; the
+      // AC array exports through its own inverter (arrayKwh already clipped it).
+      ok('pv ac: battery export within the inverter export cap',
+         rp.slots.every((s) => s.disExp <= P.inverterKw * 0.5 + 1e-6));
     }
   }
   // export disabled: PV still serves the house and charges, but nothing leaves the property
@@ -196,6 +202,38 @@ for (const cycle of ['scattered', 'contiguous']) {
     ok(`pv ${coupling} no-export: nothing is exported`,
        rq.pvExport === 0 && rq.slots.every((s) => s.pvExport === 0 && s.gridExp <= 1e-12));
     ok(`pv ${coupling} no-export: no slot both imports and exports`, bothWays(rq));
+  }
+  // a DC array bigger than the inverter: generation alone overflows, so the clip is real
+  // and cannot be absorbed by trimming battery export away
+  {
+    const big = actual.map((v) => v * 3);              // peaks ~4.7 kWh/half-hour vs a 2.5 cap
+    const rb = runSim({ usage, load, imp, exp, scTotalP: 0, params: { ...P, cycle: 'contiguous' },
+                        pv: { ac: z, dc: big, acF1: z, acF2: z, dcF1: big, dcF2: big } });
+    ok('pv dc oversize: the inverter really clips', rb.pvSpill > 1);
+    ok('pv dc oversize: every slot still balances', rb.slots.every((s, i) =>
+       Math.abs(s.pvToHouse + s.pvToBattery + s.pvExport + s.pvSpill - big[i]) < 1e-9));
+    ok('pv dc oversize: AC output stays within the inverter', rb.slots.every((s) =>
+       s.pvGen - s.pvToBattery - s.pvSpill + s.disLoad + s.disExp <= P.inverterKw * 0.5 + 1e-6));
+    ok('pv dc oversize: run stays clean', rb.socViolations === 0 && bothWays(rb));
+  }
+  // connection export cap: PV takes the cap before the battery does. Free PV that would
+  // be spilled beats stored energy, which keeps its worth in the pack, so no slot may
+  // spill PV while the battery is exporting.
+  {
+    const CAP = 0.5;                                    // 1.0 kW G100 -> 0.5 kWh/half-hour
+    for (const coupling of ['ac', 'dc']) {
+      const rk = runSim({ usage, load, imp, exp, scTotalP: 0,
+                          params: { ...P, cycle: 'contiguous', exportLimitKw: 2 * CAP }, pv: mkPv(coupling) });
+      ok(`pv ${coupling} export cap: total export never exceeds the cap`,
+         rk.slots.every((s) => s.gridExp <= CAP + 1e-9));
+      ok(`pv ${coupling} export cap: the cap actually binds`,
+         rk.slots.some((s) => s.gridExp > CAP - 1e-9));
+      ok(`pv ${coupling} export cap: PV is never spilled while the battery exports`,
+         rk.slots.every((s) => s.pvSpill <= 1e-9 || s.disExp <= 1e-9));
+      ok(`pv ${coupling} export cap: slots still balance`, balanced(rk));
+      ok(`pv ${coupling} export cap: run stays clean`,
+         rk.socViolations === 0 && bothWays(rk) && rk.slots.every((s) => Number.isFinite(s.soc)));
+    }
   }
   // whole-house import cap: charge room is re-checked against the deficit AFTER PV
   {

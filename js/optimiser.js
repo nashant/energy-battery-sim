@@ -27,8 +27,13 @@ export function makeCfg(p) {
     // only charge in slots at or below this price
     maxChgP: (p.maxChargePrice === null || p.maxChargePrice === undefined ||
               p.maxChargePrice === '') ? Infinity : Number(p.maxChargePrice),
-    // G100 export limitation: cap export power independently of inverter size
+    // the battery's own per-slot export bound: the G100 limit when one is set, else the
+    // inverter it discharges through
     exportSlot: p.exportLimitKw ? p.exportLimitKw * 0.5 : invSlot,
+    // the connection's total export bound (G100), shared by PV and battery export.
+    // Infinity when no limit is entered: an AC-coupled array has its own inverter, so
+    // nothing physical caps its export at the battery inverter's size.
+    exportCap: p.exportLimitKw ? p.exportLimitKw * 0.5 : Infinity,
     // planner options (README "Planner options"); defaults are the shipped behaviour
     holdFor: p.holdFor || 'anyCheaperRefill',
     packEnergyWorth: p.packEnergyWorth || 'displacedPrice',

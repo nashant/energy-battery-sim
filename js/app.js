@@ -241,7 +241,10 @@ $('locate').onclick = async () => {
 };
 async function ensurePv() {
   const s = state.solar;
-  if (!s.arrays.length || !s.lat) { s.pv = null; s.pvKey = null; return null; }
+  if (!s.arrays.length) { s.pv = null; s.pvKey = null; return null; }
+  // arrays with no located site would otherwise run as if there were no solar at all
+  // while payback still charged for the panels. Run and Compare show the message.
+  if (!s.lat) throw new Error('Solar arrays are configured but the postcode has not been located — press Locate first.');
   if (s.pv && s.pvKey === solarKey()) return s.pv.series;
   const { series, perArray } = await buildPv(state.usage, s, s.arrays, fetch,
     (m) => { $('pvNote').textContent = m; });
@@ -334,7 +337,6 @@ function params() {
     gasUnitRate: num('gasUnitRate'),
     gasScPerDay: num('gasScPerDay'),
     solarCost: state.solar.arrays.reduce((a, x) => a + (x.cost || 0), 0),
-    hasSolar: state.solar.arrays.length > 0,
   };
 }
 
@@ -517,6 +519,11 @@ function render() {
 
   const save = cur.total - withBat.total;
   const cost = systemCost(p);
+  // `cost` includes the array, so the battery-only figures (which measure
+  // savedVsNoBattery, the marginal saving over a PV-netted baseline) divide by the
+  // battery's own share of the spend.
+  const solarCost = p.solarCost || 0;
+  const battCost = cost - solarCost;
   const annual = 365 / withBat.nDays;      // CSV period -> per-year
   // Full-ledger payback: do-nothing = current tariff on RAW usage (no heat pump) plus
   // the gas bill; new world = withBat.total (already includes any heat pump load).
@@ -533,17 +540,15 @@ function render() {
   const pbSave = (hpCost > 0 || gasBill > 0
     ? currentTariffTotal(state.usage, null, curOverride(p)).total + gasBill - withBat.total
     : save) * annual;
-  const pbBatt = paybackYears(cost, withBat.savedVsNoBattery * annual, p.escPct);
+  const pbBatt = paybackYears(battCost, withBat.savedVsNoBattery * annual, p.escPct);
   const pbCur = paybackYears(invest, pbSave, p.escPct);
   // year-1 simple return; escalation grows it in later years, so this is the floor
   const roiCur = roiPct(invest, pbSave);
-  const roiBatt = roiPct(cost, withBat.savedVsNoBattery * annual);
+  const roiBatt = roiPct(battCost, withBat.savedVsNoBattery * annual);
   const fmtRoi = (r) => r === null ? '' : ` · ${r.toFixed(1)}%/yr`;
-  // Investment breakdown. `cost` already includes the solar cost, so the battery share is
-  // what is left after it; with neither solar nor a heat pump the single total reads better.
-  const solarCost = p.solarCost || 0;
+  // Investment breakdown; with neither solar nor a heat pump the single total reads better.
   const costParts = solarCost > 0 || hpCost > 0 ? [
-    `${gbp(cost - solarCost)} battery`,
+    `${gbp(battCost)} battery`,
     ...(solarCost > 0 ? [`${gbp(solarCost)} solar`] : []),
     ...(hpCost > 0 ? [`${gbp(hpCost)} heat pump`] : []),
   ] : [];

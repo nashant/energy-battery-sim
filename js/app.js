@@ -172,6 +172,30 @@ wireDrop('dropGas', 'fileGas', (text, name) => {
   cachePut('csv:gas', { name, text });
 });
 
+// ------------------------------------------------------------------ remembered inputs
+// Every control in the panel is saved when Run, Compare or a sweep starts and put back on
+// the next visit, after the CSVs, so a value typed over a CSV-derived one wins.
+const FORM_KEY = 'form:controls';
+const controls = () =>
+  [...$('controls').querySelectorAll('input[id], select[id]')].filter((el) => el.type !== 'file');
+function saveControls() {
+  const v = {};
+  for (const el of controls()) v[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  cachePut(FORM_KEY, v);
+}
+async function restoreControls() {
+  const v = await cacheGet(FORM_KEY);
+  if (!v) return;
+  for (const el of controls()) {
+    if (!(el.id in v)) continue;
+    if (el.type === 'checkbox') el.checked = !!v[el.id]; else el.value = v[el.id];
+  }
+  // re-sync the dependent UI without the import handler, which would reset the export
+  syncTariffUi(); syncPredictExport(); syncControls();
+  $('curSource').dispatchEvent(new Event('change'));
+  $('hpMode').dispatchEvent(new Event('change'));
+}
+
 // restore a previously dropped CSV so returning visitors skip the upload
 (async () => {
   const u = await cacheGet('csv:usage');
@@ -182,6 +206,7 @@ wireDrop('dropGas', 'fileGas', (text, name) => {
   if (g && g.text && !state.gas) {
     try { loadGas(g.text, g.name, true); $('dropGas').classList.add('ok'); } catch { /* stale */ }
   }
+  await restoreControls();
 })();
 
 // ------------------------------------------------------------------ params
@@ -249,6 +274,7 @@ const clearError = () => { $('errBox').innerHTML = ''; };
 
 $('run').onclick = async () => {
   const p = params();
+  saveControls();
   clearError();
   $('run').disabled = true;
   try {
@@ -281,6 +307,7 @@ $('run').onclick = async () => {
 
 $('compare').onclick = async () => {
   const p = params();
+  saveControls();
   clearError();
   $('compare').disabled = true;
   const rows = [];
@@ -382,7 +409,7 @@ function sweepTables(caps, invs, p, cur, annual) {
 
 $('clearCache').onclick = async () => {
   await clearCache();
-  status('cached rates & data cleared');
+  status('cached rates, data & remembered inputs cleared');
 };
 
 // ------------------------------------------------------------------ render

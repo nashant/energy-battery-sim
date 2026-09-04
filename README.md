@@ -5,7 +5,9 @@ half-hourly consumption and the real published rates.
 
 Entirely client-side. Drop in a CSV, the page fetches rates from the public Octopus API
 (which sends `access-control-allow-origin: *`) and runs the optimisation in the browser.
-No data leaves the machine.
+No data leaves the machine. Your CSVs and every input on the panel are kept in the
+browser's own storage (saved when you press Run or Compare) so a return visit starts where
+you left off; the clear button forgets them.
 
 ## Run
 

@@ -327,4 +327,50 @@ ok('agile excludes flux export', !tariffExports('agile').includes('flux-export')
 ok('go defaults to no export', tariffExports('go')[0] === 'none');
 ok('agile defaults to agile outgoing', tariffExports('agile')[0] === 'agile-outgoing');
 
+// ---- solar helpers (js/solar.js): pure, no network
+import { bearingToAzimuth, toHalfHours, alignToUsage, arrayKwh, sumArrays } from '../js/solar.js';
+ok('azimuth: south wall is 0', bearingToAzimuth(180) === 0);
+ok('azimuth: east is -90', bearingToAzimuth(90) === -90);
+ok('azimuth: west is 90', bearingToAzimuth(270) === 90);
+ok('azimuth: north is 180', bearingToAzimuth(0) === 180);
+ok('azimuth: 191 -> 11', bearingToAzimuth(191) === 11);
+{
+  // hourly value at 11:00 is the mean over 10:00-11:00 -> both half hours of that hour
+  const m = toHalfHours(['2026-06-01T10:00', '2026-06-01T11:00'], [100, 300], 60);
+  const t10 = Date.UTC(2026, 5, 1, 10), t1030 = Date.UTC(2026, 5, 1, 10, 30);
+  ok('hourly -> both preceding half hours', m.get(t10) === 300 && m.get(t1030) === 300);
+  ok('hourly -> earlier hour covers 09:00 and 09:30',
+     m.get(Date.UTC(2026, 5, 1, 9)) === 100 && m.get(Date.UTC(2026, 5, 1, 9, 30)) === 100);
+  // 15-minutely values at :15 and :30 average into the half hour starting :00
+  const q = toHalfHours(['2026-06-01T10:15', '2026-06-01T10:30', '2026-06-01T10:45', '2026-06-01T11:00'],
+                        [100, 200, 300, 500], 15);
+  ok('15-min -> mean of the two preceding quarters', q.get(t10) === 150 && q.get(t1030) === 400);
+  ok('15-min null counts as 0 in the mean',
+     toHalfHours(['2026-06-01T10:15', '2026-06-01T10:30'], [null, 200], 15).get(t10) === 100);
+}
+{
+  const t0 = Date.UTC(2025, 9, 26, 0);                       // 2025-10-26, clocks go back
+  const m = new Map([[t0, 10], [t0 + 1800000, 20]]);
+  const r = alignToUsage(m, [t0, t0 + 1800000, t0 + 3600000, t0 + 5400000, t0 + 7200000]);
+  ok('align: exact hits', r.values[0] === 10 && r.values[1] === 20);
+  ok('align: repeat hour filled from an hour earlier', r.values[2] === 10 && r.values[3] === 20 && r.filled === 2);
+  ok('align: otherwise 0 and counted missing', r.values[4] === 0 && r.missing === 1);
+}
+{
+  const arr = { kwp: 4, lossPct: 14, inverterKw: 3.68, coupling: 'ac' };
+  const k = arrayKwh([0, 500, 1000, 1200], arr);
+  ok('kWh: 500 W/m2 on 4 kWp at 14% loss = 0.86 kWh/half-hour', close(k[1], 0.5 * 4 * 0.86 * 0.5));
+  ok('kWh: AC inverter clips at 3.68 kW -> 1.84 kWh', close(k[3], 1.84) && close(k[2], 1.72));
+  ok('kWh: DC array is not clipped here', close(arrayKwh([1200], { ...arr, coupling: 'dc' })[0], 1.2 * 4 * 0.86 * 0.5));
+  ok('kWh: null irradiance is 0', arrayKwh([null], arr)[0] === 0);
+}
+{
+  const a = { coupling: 'ac' }, d = { coupling: 'dc' };
+  const s = sumArrays([{ arr: a, actual: [1, 2], f1: [1, 1], f2: [2, 2] },
+                       { arr: d, actual: [3, 4], f1: [0, 1], f2: [0, 2] }], 2);
+  ok('sum: ac and dc split by coupling', s.ac[1] === 2 && s.dc[1] === 4);
+  ok('sum: forecasts split too', s.acF1[0] === 1 && s.dcF2[1] === 2);
+  ok('sum: typed arrays of length T', s.ac.length === 2 && s.acF2 instanceof Float64Array);
+}
+
 process.exit(fail ? 1 : 0);

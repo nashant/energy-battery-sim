@@ -2,6 +2,7 @@ import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
 import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
+import { lookupPostcode, buildPv } from './solar.js';
 
 const $ = (id) => document.getElementById(id);
 const gbp = (n) => (n < 0 ? '−' : '') + '£' + Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -10,6 +11,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const state = { usage: null, gas: null, run: null, flow: null, timer: null, dayIndex: new Map() };
+state.solar = { postcode: '', lat: null, lon: null, arrays: [], pv: null, pvKey: null };
 
 // ------------------------------------------------------------------ init
 
@@ -172,6 +174,80 @@ wireDrop('dropGas', 'fileGas', (text, name) => {
   cachePut('csv:gas', { name, text });
 });
 
+// ------------------------------------------------------------------ solar
+const DIRS = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
+const newArray = () => ({ id: Math.random().toString(36).slice(2, 8), name: `Array ${state.solar.arrays.length + 1}`,
+  bearing: 180, tilt: 35, kwp: 4, inverterKw: 3.68, lossPct: 14, coupling: 'ac', cost: 5000 });
+const solarKey = () => JSON.stringify({ lat: state.solar.lat, lon: state.solar.lon,
+  arrays: state.solar.arrays.map((a) => [a.bearing, a.tilt, a.kwp, a.inverterKw, a.lossPct, a.coupling]) });
+
+function renderArrays() {
+  const s = state.solar;
+  $('arrays').innerHTML = s.arrays.map((a) => `
+    <div class="array" data-id="${a.id}">
+      <button class="rm" data-rm="${a.id}">remove</button>
+      <div class="row4">
+        <div><label>Name</label><input data-k="name" type="text" value="${esc(a.name)}"></div>
+        <div><label>Faces (°)</label><input data-k="bearing" type="number" min="0" max="359" value="${a.bearing}"></div>
+        <div><label>Direction</label><select data-dir>${Object.keys(DIRS).map((d) =>
+          `<option value="${d}" ${DIRS[d] === a.bearing ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+        <div><label>Tilt (°)</label><input data-k="tilt" type="number" min="0" max="90" value="${a.tilt}"></div>
+      </div>
+      <div class="row4">
+        <div><label>kWp</label><input data-k="kwp" type="number" step="0.1" value="${a.kwp}"></div>
+        <div><label>Inverter (kW)</label><input data-k="inverterKw" type="number" step="0.01" value="${a.inverterKw ?? ''}" placeholder="no clip"></div>
+        <div><label>Losses (%)</label><input data-k="lossPct" type="number" step="1" value="${a.lossPct}"></div>
+        <div><label>Cost (£)</label><input data-k="cost" type="number" step="50" value="${a.cost ?? ''}"></div>
+      </div>
+      <label>Coupling</label>
+      <select data-k="coupling">
+        <option value="ac" ${a.coupling === 'ac' ? 'selected' : ''}>AC — own inverter, independent of the battery</option>
+        <option value="dc" ${a.coupling === 'dc' ? 'selected' : ''}>DC — into the battery's hybrid inverter</option>
+      </select>
+      <div class="note" data-status>${s.pv && s.pvKey === solarKey() ? pvStatusFor(a) : 'not fetched'}</div>
+    </div>`).join('');
+  $('fetchPv').disabled = !(s.lat && s.arrays.length);
+}
+function pvStatusFor(a) {
+  const p = state.solar.pv?.perArray.find((x) => x.arr.id === a.id);
+  return p ? `${p.kwh.toFixed(0)} kWh/yr${p.missing ? ` · ${p.missing} slots without data` : ''}` : 'not fetched';
+}
+$('arrays').addEventListener('input', (e) => {
+  const row = e.target.closest('.array'); if (!row) return;
+  const a = state.solar.arrays.find((x) => x.id === row.dataset.id);
+  const k = e.target.dataset.k;
+  if (e.target.dataset.dir !== undefined) { a.bearing = DIRS[e.target.value]; row.querySelector('[data-k="bearing"]').value = a.bearing; }
+  else if (k === 'name' || k === 'coupling') a[k] = e.target.value;
+  else if (k) a[k] = e.target.value === '' ? null : Number(e.target.value);
+  if (k === 'bearing') row.querySelector('[data-dir]').value = Object.keys(DIRS).find((d) => DIRS[d] === a.bearing) ?? '';
+  $('fetchPv').disabled = !(state.solar.lat && state.solar.arrays.length);
+});
+$('arrays').addEventListener('click', (e) => {
+  const id = e.target.dataset.rm; if (!id) return;
+  state.solar.arrays = state.solar.arrays.filter((a) => a.id !== id); renderArrays();
+});
+$('addArray').onclick = () => { state.solar.arrays.push(newArray()); renderArrays(); };
+$('locate').onclick = async () => {
+  try {
+    const site = await lookupPostcode($('postcode').value);
+    Object.assign(state.solar, { postcode: site.postcode, lat: site.lat, lon: site.lon });
+    $('siteNote').textContent = `${site.postcode}: ${site.lat.toFixed(4)}, ${site.lon.toFixed(4)}`;
+    renderArrays();
+  } catch (e) { $('siteNote').textContent = e.message; }
+};
+async function ensurePv() {
+  const s = state.solar;
+  if (!s.arrays.length || !s.lat) { s.pv = null; s.pvKey = null; return null; }
+  if (s.pv && s.pvKey === solarKey()) return s.pv.series;
+  const { series, perArray } = await buildPv(state.usage, s, s.arrays, fetch,
+    (m) => { $('pvNote').textContent = m; });
+  s.pv = { series, perArray }; s.pvKey = solarKey();
+  $('pvNote').textContent = `${perArray.reduce((a, p) => a + p.kwh, 0).toFixed(0)} kWh/yr across ${perArray.length} array(s)`;
+  renderArrays();
+  return series;
+}
+$('fetchPv').onclick = async () => { if (!state.usage) { showError('Load a usage CSV first — irradiance is fetched for its date range.'); return; } try { await ensurePv(); } catch (e) { showError(e.message); } };
+
 // ------------------------------------------------------------------ remembered inputs
 // Every control in the panel is saved when Run, Compare or a sweep starts and put back on
 // the next visit, after the CSVs, so a value typed over a CSV-derived one wins.
@@ -181,6 +257,7 @@ const controls = () =>
 function saveControls() {
   const v = {};
   for (const el of controls()) v[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  v.solar = { postcode: state.solar.postcode, lat: state.solar.lat, lon: state.solar.lon, arrays: state.solar.arrays };
   cachePut(FORM_KEY, v);
 }
 async function restoreControls() {
@@ -189,6 +266,12 @@ async function restoreControls() {
   for (const el of controls()) {
     if (!(el.id in v)) continue;
     if (el.type === 'checkbox') el.checked = !!v[el.id]; else el.value = v[el.id];
+  }
+  if (v.solar) {
+    Object.assign(state.solar, v.solar);
+    $('postcode').value = v.solar.postcode || '';
+    if (v.solar.lat) $('siteNote').textContent = `${v.solar.postcode}: ${v.solar.lat.toFixed(4)}, ${v.solar.lon.toFixed(4)}`;
+    renderArrays();
   }
   // re-sync the dependent UI without the import handler, which would reset the export
   syncTariffUi(); syncPredictExport(); syncControls();
@@ -246,6 +329,8 @@ function params() {
     hpCost: num('hpCost'),
     gasUnitRate: num('gasUnitRate'),
     gasScPerDay: num('gasScPerDay'),
+    solarCost: state.solar.arrays.reduce((a, x) => a + (x.cost || 0), 0),
+    hasSolar: state.solar.arrays.length > 0,
   };
 }
 
@@ -280,6 +365,7 @@ $('run').onclick = async () => {
   try {
     status('<span class="spinner"></span> fetching rates…');
     const { load, add, info } = buildLoad(p);
+    const pv = await ensurePv();
     const prices = await buildPrices({
       importKey: p.importKey, exportKey: p.exportKey, region: p.region,
       instants: state.usage.utc, flatExport: p.flatExport,
@@ -289,9 +375,9 @@ $('run').onclick = async () => {
     await new Promise((r) => setTimeout(r, 0));
 
     const withBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp,
-                             scTotalP: prices.scTotalP, params: { ...p, useBattery: true } });
+                             scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: true } });
     const noBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp,
-                           scTotalP: prices.scTotalP, params: { ...p, useBattery: false } });
+                           scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: false } });
     const cur = currentTariffTotal(state.usage, add, curOverride(p));
 
     state.run = { p, prices, withBat, noBat, cur, hpInfo: info };
@@ -313,6 +399,7 @@ $('compare').onclick = async () => {
   const rows = [];
   try {
     const { load, add } = buildLoad(p);
+    const pv = await ensurePv();
     const cur = currentTariffTotal(state.usage, add, curOverride(p));
     const combos = [];
     // every permitted pairing that has a published product (custom flat rates are UI-only)
@@ -328,10 +415,10 @@ $('compare').onclick = async () => {
       });
       await new Promise((r) => setTimeout(r, 0));
       const wb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
-                          scTotalP: pr.scTotalP,
+                          scTotalP: pr.scTotalP, pv,
                           params: { ...p, allowExport: c.ek !== 'none', useBattery: true } });
       const nb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
-                          scTotalP: pr.scTotalP,
+                          scTotalP: pr.scTotalP, pv,
                           params: { ...p, allowExport: c.ek !== 'none', useBattery: false } });
       rows.push({ ...c, wb, nb, note: IMPORT_TARIFFS[c.ik].note });
     }
@@ -352,7 +439,7 @@ $('runSweeps').onclick = async () => {
   try {
     const { load } = buildLoad(p);
     const base = { usage: state.usage, load, imp: prices.imp, exp: prices.exp,
-                   scTotalP: prices.scTotalP };
+                   scTotalP: prices.scTotalP, pv: state.solar.pv?.series ?? null };
     const annual = 365 / withBat.nDays;
     const one = async (key, v, unit) => {
       status(`<span class="spinner"></span> sweep: ${v} ${unit}…`);
@@ -514,7 +601,7 @@ function render() {
 const card = (k, v, d, cls = '') =>
   `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div><div class="d">${d}</div></div>`;
 
-const systemCost = (p) => (p.batteryCost || 0) + (p.inverterCost || 0) + (p.installCost || 0);
+const systemCost = (p) => (p.batteryCost || 0) + (p.inverterCost || 0) + (p.installCost || 0) + (p.solarCost || 0);
 const fmtYears = (y) => (y === null ? '—' : y > 99 ? '>99 yrs' : `${y.toFixed(1)} yrs`);
 
 function renderCompare(rows, cur, cost = 0, escPct = 0) {

@@ -151,3 +151,7 @@ main > *, .flow-wrap > * { min-width: 0; }
   main { padding: 12px 14px; gap: 12px; }
   .panel { padding: 12px; margin-bottom: 12px; }
 }
+
+.array { border:1px solid var(--line); border-radius:8px; padding:8px; margin:8px 0; }
+.array .row4 { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+.array .rm { float:right; font-size:11px; }

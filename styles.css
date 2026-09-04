@@ -1,7 +1,7 @@
 :root {
   --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
   --fg:#e6edf3; --dim:#8b98a5; --acc:#4aa8ff; --good:#3fb950; --bad:#f85149;
-  --warn:#d29922; --batt:#a371f7;
+  --warn:#d29922; --batt:#a371f7; --sun:#e3b341;
 }
 @media (prefers-color-scheme: light) {
   :root { --bg:#f6f8fa; --panel:#fff; --panel2:#f0f3f6; --line:#d8dee4;
@@ -79,13 +79,14 @@ tr.cur td { background:color-mix(in srgb, var(--acc) 14%, transparent); font-wei
                     animation-iteration-count:infinite; }
 @keyframes dash { to { stroke-dashoffset:-32; } }
 .flow-live.import { stroke:var(--acc); } .flow-live.export { stroke:var(--good); }
-.flow-live.battery { stroke:var(--batt); }
+.flow-live.battery { stroke:var(--batt); } .flow-live.solar { stroke:var(--sun); }
 .flow-label { font-size:12px; fill:var(--dim); font-variant-numeric:tabular-nums; }
 .flow-label.import { fill:var(--acc); } .flow-label.export { fill:var(--good); }
-.flow-label.battery { fill:var(--batt); }
+.flow-label.battery { fill:var(--batt); } .flow-label.solar { fill:var(--sun); }
 .node { fill:var(--panel2); stroke:var(--line); stroke-width:1.5; }
 .node.importing { stroke:var(--acc); } .node.exporting { stroke:var(--good); }
 .node.charging { stroke:var(--acc); } .node.discharging { stroke:var(--batt); }
+.node.shining { stroke:var(--sun); }
 .node-label { font-size:12px; fill:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
 .node-value { font-size:15px; fill:var(--fg); font-weight:650; font-variant-numeric:tabular-nums; }
 .node-sub { font-size:10.5px; fill:var(--dim); font-variant-numeric:tabular-nums; }
@@ -106,6 +107,7 @@ tr.cur td { background:color-mix(in srgb, var(--acc) 14%, transparent); font-wei
 .legend i.sw-acc { background:var(--acc); }
 .legend i.sw-batt { background:var(--batt); }
 .legend i.sw-good { background:var(--good); }
+.legend i.sw-sun { background:var(--sun); }
 
 /* Collapsible settings. On mobile the six control panels otherwise push every result
    off-screen; the Run buttons live OUTSIDE the <details> so they stay reachable when

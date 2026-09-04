@@ -1,9 +1,10 @@
-// Animated power-flow diagram: Grid, House, Battery, with three edges.
+// Animated power-flow diagram: Solar, Grid, House, Battery.
 // Charge and discharge never occur in the same slot — the planner's one-meter XOR rule
 // (solveHorizon in js/causal.js) refuses to book import and export in one half-hour — so
 // the Grid<->Battery edge can carry both directions on one path without ambiguity.
 
 const NODES = {
+  sun: { x: 90, y: 60, label: 'Solar' },
   grid: { x: 90, y: 190, label: 'Grid' },
   house: { x: 400, y: 88, label: 'House' },
   batt: { x: 400, y: 292, label: 'Battery' },
@@ -13,6 +14,10 @@ const EDGES = [
   { id: 'gh', from: 'grid', to: 'house' },
   { id: 'gb', from: 'grid', to: 'batt' },
   { id: 'bh', from: 'batt', to: 'house' },
+  // PV is generation, so it only ever pushes: one edge per destination, all one-way.
+  { id: 'sh', from: 'sun', to: 'house' },
+  { id: 'sb', from: 'sun', to: 'batt' },
+  { id: 'sg', from: 'sun', to: 'grid' },
 ];
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -113,7 +118,16 @@ export class FlowDiagram {
     this.setEdge('bh', slot.disLoad, false, 'battery');
     // charging and exporting share the Grid<->Battery edge; they are mutually exclusive
     if (slot.chg > 1e-9) this.setEdge('gb', slot.chg, false, 'import');
-    else this.setEdge('gb', slot.disExp, true, 'export');
+    else this.setEdge('gb', slot.disExp, true, 'export');   // PV export has its own edge
+    // pvToHouse can land on -4e-16 in a fully clipped slot; clamp for display only
+    this.setEdge('sh', Math.max(0, slot.pvToHouse || 0), false, 'solar');
+    this.setEdge('sb', slot.pvToBattery || 0, false, 'solar');
+    this.setEdge('sg', slot.pvExport || 0, false, 'solar');
+
+    const pvGen = slot.pvGen || 0, pvSpill = slot.pvSpill || 0;
+    this.nodes.sun.value.textContent = pvGen > 1e-9 ? `${(pvGen * 2).toFixed(2)} kW` : 'dark';
+    this.nodes.sun.sub.textContent = pvSpill > 1e-9 ? `${(pvSpill * 2).toFixed(2)} kW spilled` : '';
+    this.nodes.sun.rect.setAttribute('class', `node node-sun ${pvGen > 1e-9 ? 'shining' : ''}`);
 
     const net = slot.gridImp - slot.gridExp;
     this.nodes.grid.value.textContent = slot.gridExp > 1e-9
@@ -129,12 +143,14 @@ export class FlowDiagram {
       ? `${(100 * slot.disLoad / Math.max(slot.load, 1e-9)).toFixed(0)}% from battery`
       : 'all from grid';
 
-    const flow = slot.chg > 1e-9 ? slot.chg : -(slot.disLoad + slot.disExp);
+    // the pack charges from the grid and from PV; both count as flow in
+    const chgIn = slot.chg + (slot.pvToBattery || 0);
+    const flow = chgIn > 1e-9 ? chgIn : -(slot.disLoad + slot.disExp);
     this.nodes.batt.value.textContent = Math.abs(flow) < 1e-9
       ? 'idle' : `${flow > 0 ? '+' : ''}${(flow * 2).toFixed(2)} kW`;
     this.nodes.batt.sub.textContent = `${slot.soc.toFixed(1)} kWh stored`;
     this.nodes.batt.rect.setAttribute(
-      'class', `node node-batt ${slot.chg > 1e-9 ? 'charging' : (flow < -1e-9 ? 'discharging' : '')}`);
+      'class', `node node-batt ${chgIn > 1e-9 ? 'charging' : (flow < -1e-9 ? 'discharging' : '')}`);
 
     this.socFill.setAttribute('width', 124 * Math.min(1, slot.soc / cap));
     this.socText.textContent = `state of charge ${slot.socPct.toFixed(0)}% of ${cap} kWh`;

@@ -249,7 +249,7 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
 
     // execute the active plan against ACTUAL load and ACTUAL PV
     const pA = pvAt(i, 'ac'), pD = pvAt(i, 'dc');
-    let cin = 0, pvcDc = 0, pvcAc = 0, dl = 0, dx = 0, plannedSoc = null;
+    let cin = 0, pvcDc = 0, pvcAc = 0, dl = 0, dx = 0, plannedSoc = null, pvFc = 0;
     let room = Math.max(0, (cfg.cap - soc) / cfg.eff);                 // AC/DC-side kWh the pack can take
     if (plan && i >= planStart && i < horizon) {
       const n = i - planStart;
@@ -260,6 +260,10 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
       pvcDc = Math.min(pvcPlan, pD, cfg.slotIn, room);
       pvcAc = Math.min(pvcPlan - pvcDc, pA, cfg.slotIn - pvcDc, room - pvcDc);
       plannedSoc = plan.plannedSoc[n] + cfg.reserve;
+      // the day-ahead PV the plan worked from, for the chart: the forecast base at the
+      // plan's issue time, without the intraday ratio — honest about lead time
+      const b = fcPv ? fcPv.base(i, planStart) : null;
+      pvFc = b ? b.ac + b.dc : 0;
     }
     const pvc = pvcDc + pvcAc;
     room -= pvc;
@@ -306,7 +310,7 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
     const spill = sur - pvx + dcClip;
     soc += (cin + pvc) * cfg.eff - dl - dx;
 
-    slots[i] = { i, cin, pvc, dl, dx, pvx, spill, soc, plannedSoc,
+    slots[i] = { i, cin, pvc, dl, dx, pvx, spill, soc, plannedSoc, pvFc,
                  def, pvHouse: Math.min(load[i], gross) };
 
     // settle: forecaster learns the actual, day buffer fills
@@ -352,7 +356,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
   const allowX = !!params.allowExport;
 
   for (let i = 0; i < load.length; i++) {
-    const { cin, pvc, dl, dx, pvx, spill, soc, plannedSoc, def, pvHouse } = exec[i];
+    const { cin, pvc, dl, dx, pvx, spill, soc, plannedSoc, pvFc, def, pvHouse } = exec[i];
     if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
     const gImp = def + cin - dl;                       // deficit after PV, plus grid charge, less discharge
     const gExp = dx + pvx;
@@ -389,7 +393,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
       soc: Math.max(0, soc) + cfg.reserve,
       socPct: cfg.cap + cfg.reserve
         ? 100 * (Math.max(0, soc) + cfg.reserve) / (cfg.cap + cfg.reserve) : 0,
-      plannedSoc,
+      plannedSoc, pvFc,
       costP: slotP,
     };
   }

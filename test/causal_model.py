@@ -607,7 +607,7 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
 
         # execute the active plan against ACTUAL load and ACTUAL PV
         p_a, p_d = pv_at(i, 'ac'), pv_at(i, 'dc')
-        cin, pvc_dc, pvc_ac, dl, dx, planned_soc = 0, 0, 0, 0, 0, None
+        cin, pvc_dc, pvc_ac, dl, dx, planned_soc, pv_fc = 0, 0, 0, 0, 0, None, 0
         room = max(0, (cfg['cap'] - soc) / cfg['eff'])   # AC/DC-side kWh the pack can take
         if plan is not None and i >= plan_start and i < horizon:
             n = i - plan_start
@@ -619,6 +619,8 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
             pvc_dc = min(pvc_plan, p_d, cfg['slotIn'], room)
             pvc_ac = min(pvc_plan - pvc_dc, p_a, cfg['slotIn'] - pvc_dc, room - pvc_dc)
             planned_soc = plan['plannedSoc'][n] + cfg['reserve']
+            b = fc_pv.base(i, plan_start) if fc_pv is not None else None
+            pv_fc = b['ac'] + b['dc'] if b is not None else 0
         pvc = pvc_dc + pvc_ac
         room -= pvc
         # 2. what PV is left serves the house; the DC remainder crosses the inverter later
@@ -669,7 +671,7 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
 
         slots[i] = {'i': i, 'cin': cin, 'pvc': pvc, 'dl': dl, 'dx': dx, 'pvx': pvx,
                     'spill': spill, 'soc': soc, 'plannedSoc': planned_soc,
-                    'def': deficit, 'pvHouse': min(load[i], gross)}
+                    'pvFc': pv_fc, 'def': deficit, 'pvHouse': min(load[i], gross)}
 
         # settle: forecaster learns the actual, day buffer fills
         sd = slot_of_day(usage['wall'][i])

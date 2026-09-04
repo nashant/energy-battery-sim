@@ -539,12 +539,26 @@ function render() {
   const roiCur = roiPct(invest, pbSave);
   const roiBatt = roiPct(cost, withBat.savedVsNoBattery * annual);
   const fmtRoi = (r) => r === null ? '' : ` · ${r.toFixed(1)}%/yr`;
+  // Investment breakdown. `cost` already includes the solar cost, so the battery share is
+  // what is left after it; with neither solar nor a heat pump the single total reads better.
+  const solarCost = p.solarCost || 0;
+  const costParts = solarCost > 0 || hpCost > 0 ? [
+    `${gbp(cost - solarCost)} battery`,
+    ...(solarCost > 0 ? [`${gbp(solarCost)} solar`] : []),
+    ...(hpCost > 0 ? [`${gbp(hpCost)} heat pump`] : []),
+  ] : [];
   $('cards').innerHTML = `
     ${card('Current tariff', gbp(cur.total), cur.source === 'manual'
       ? `manual · ${cur.impliedRate.toFixed(2)} p/kWh + ${(p.curScPerDay || 0).toFixed(2)} p/day`
       : `from your CSV · ${cur.impliedRate.toFixed(2)} p/kWh implied`)}
-    ${card('Tariff, no battery', gbp(noBat.total), `energy ${gbp(noBat.energy)} + standing ${gbp(noBat.sc)}`)}
+    ${card(withBat.pvKwh > 0 ? 'Tariff, solar only' : 'Tariff, no battery', gbp(noBat.total),
+           `energy ${gbp(noBat.energy)} + standing ${gbp(noBat.sc)}`)}
     ${card('With battery', gbp(withBat.total), `energy ${gbp(withBat.energy)} + standing ${gbp(withBat.sc)}`)}
+    ${withBat.pvKwh > 0 ? card('Solar', `${withBat.pvKwh.toFixed(0)} kWh`,
+      `${(100 * withBat.pvToHouse / withBat.pvKwh).toFixed(0)}% used directly · ` +
+      `${(100 * withBat.pvToBattery / withBat.pvKwh).toFixed(0)}% stored · ` +
+      `${(100 * withBat.pvExport / withBat.pvKwh).toFixed(0)}% exported · ` +
+      `${(100 * withBat.pvSpill / withBat.pvKwh).toFixed(0)}% spilled`) : ''}
     ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery` +
            (withBat.wearP > 0 ? `<br>${gbp(save - withBat.wear)} net of battery wear` : ''),
            save >= 0 ? 'pos' : 'neg')}
@@ -552,7 +566,7 @@ function render() {
       `${withBat.wearP.toFixed(2)} p per kWh stored · ${(withBat.stored / withBat.usableCap * annual).toFixed(0)} cycles/yr ` +
       `→ ${(p.cycleLife / (withBat.stored / withBat.usableCap * annual)).toFixed(0)} yrs to ${p.cycleLife.toLocaleString('en-GB')} cycles`) : ''}
     ${invest > 0 ? card('Payback', fmtYears(pbCur) + fmtRoi(roiCur), [
-      (hpCost > 0 ? `${gbp(cost)} battery + ${gbp(hpCost)} heat pump` : gbp(invest)) +
+      (costParts.length ? costParts.join(' + ') : gbp(invest)) +
         ` ÷ ${gbp(pbSave)}/yr vs your current setup`,
       ...(gasBill > 0 ? [`incl. ${gbp(gasBill * annual)}/yr gas bill removed`] : []),
       ...(p.escPct > 0 ? [`prices rising ${p.escPct}%/yr — ROI is the year-1 floor`] : []),
@@ -631,15 +645,19 @@ function renderMonths() {
   const by = new Map();
   withBat.perDay.forEach((d, i) => {
     const k = d.day.slice(0, 7);
-    if (!by.has(k)) by.set(k, { kwh: 0, base: 0, cost: 0, out: 0 });
+    if (!by.has(k)) by.set(k, { kwh: 0, base: 0, cost: 0, out: 0, pv: 0 });
     const o = by.get(k);
     o.kwh += d.kwh; o.base += d.baseP / 100; o.cost += d.costP / 100; o.out += d.kwhOut;
+    o.pv += d.pv || 0;
   });
+  const solar = withBat.pvKwh > 0;                 // no solar, no column
   $('monthTable').innerHTML =
-    `<thead><tr><th>Month</th><th>kWh</th><th>No battery</th><th>With battery</th>
+    `<thead><tr><th>Month</th><th>kWh</th>${solar ? '<th>Solar kWh</th>' : ''}
+      <th>No battery</th><th>With battery</th>
       <th>Saved</th><th>kWh cycled</th></tr></thead><tbody>` +
     [...by.entries()].map(([k, o]) => `<tr><td>${k}</td>
-      <td>${o.kwh.toFixed(0)}</td><td>${gbp(o.base)}</td><td>${gbp(o.cost)}</td>
+      <td>${o.kwh.toFixed(0)}</td>${solar ? `<td>${o.pv.toFixed(0)}</td>` : ''}
+      <td>${gbp(o.base)}</td><td>${gbp(o.cost)}</td>
       <td class="pos">${gbp(o.base - o.cost)}</td><td>${o.out.toFixed(0)}</td></tr>`).join('') +
     '</tbody>';
 }
@@ -719,6 +737,10 @@ function showSlot(i) {
     ${trow('Import price', `${s.imp.toFixed(2)} p/kWh`)}
     ${trow('Export price', `${s.exp.toFixed(2)} p/kWh`)}
     ${trow('House load', `${s.load.toFixed(3)} kWh (${(s.load * 2).toFixed(2)} kW)`)}
+    ${s.pvGen > 1e-9 ? trow('Solar', `${s.pvGen.toFixed(3)} kWh · ` +
+      `${Math.max(0, s.pvToHouse).toFixed(2)} house / ${s.pvToBattery.toFixed(2)} battery / ` +
+      `${s.pvExport.toFixed(2)} export` +
+      `${s.pvSpill > 1e-9 ? ` / ${s.pvSpill.toFixed(2)} spilled` : ''}`) : ''}
     ${trow('Battery charge', s.chg > 1e-9 ? `${s.chg.toFixed(3)} kWh from grid` : '—')}
     ${trow('Battery → house', s.disLoad > 1e-9 ? `${s.disLoad.toFixed(3)} kWh` : '—')}
     ${trow('Battery → export', s.disExp > 1e-9 ? `${s.disExp.toFixed(3)} kWh` : '—')}
@@ -781,16 +803,26 @@ function drawDayChart(slots) {
     planPath += `${penDown ? ' L' : (planPath ? ' M' : 'M')}${p}`;
     penDown = true;
   }
+  // PV on the same panel but its own scale: half-hourly PV kWh is far smaller than the
+  // pack's kWh, so it is drawn against the day's own peak in the lower 60% of the panel.
+  const pvMax = Math.max(1e-9, ...slots.map((s) => s.pvGen || 0), ...slots.map((s) => s.pvFc || 0));
+  const yp = (v) => B - (v / pvMax) * (B - T) * 0.6;
+  const pvPath = pvMax > 1e-6 ? `M${x(0)},${B} ` + slots.map((s, i) => `L${x(i).toFixed(1)},${yp(s.pvGen || 0).toFixed(1)}`).join(' ') + ` L${x(n - 1)},${B} Z` : '';
+  const pvFcPath = pvMax > 1e-6 ? slots.map((s, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yp(s.pvFc || 0).toFixed(1)}`).join('') : '';
+
   const bars = slots.map((s, i) => {
     const w = (R - L) / n - 1;
     if (s.chg > 1e-9) return `<rect x="${x(i) - w / 2}" y="${B}" width="${w}" height="${Math.min(28, s.chg * 9)}" fill="var(--acc)" opacity=".55"/>`;
     const d = s.disLoad + s.disExp;
     if (d > 1e-9) return `<rect x="${x(i) - w / 2}" y="${B}" width="${w}" height="${Math.min(28, d * 9)}" fill="var(--batt)" opacity=".55"/>`;
+    if (s.pvExport > 1e-9) return `<rect x="${x(i) - w / 2}" y="${B}" width="${w}" height="${Math.min(28, s.pvExport * 9)}" fill="var(--sun)" opacity=".55"/>`;
     return '';
   }).join('');
 
   $('dayChart').innerHTML = `
     <line x1="${L}" y1="${y(0)}" x2="${R}" y2="${y(0)}" stroke="var(--line)"/>
+    ${pvPath ? `<path d="${pvPath}" fill="var(--sun)" opacity=".22"/>` +
+      `<path d="${pvFcPath}" fill="none" stroke="var(--sun)" stroke-width="1" stroke-dasharray="3 3" opacity=".8"/>` : ''}
     <path d="${socPath}" fill="var(--batt)" opacity=".16"/>
     ${planPath ? `<path d="${planPath}" fill="none" stroke="var(--batt)" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>` : ''}
     <path d="${path(exps, y)}" fill="none" stroke="var(--good)" stroke-width="1.6" opacity=".85"/>

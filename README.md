@@ -89,6 +89,18 @@ node test/dom.mjs        # index.html/app.js id cross-check + FlowDiagram DOM st
 node test/e2e.mjs        # whole-year totals via the live Octopus API
 ```
 
+`test/score.mjs` is the offline £/yr scorer: it replays a real usage CSV against a real
+price CSV (the Octopus "Period from, Period to, Import, Export" download) with the
+forecaster's parameters overridable, and prints saving per configuration. List-valued flags
+score their Cartesian product; `--from YYYY-MM-DD` counts only days from that date, so the
+cold start is lived through but not scored.
+
+```sh
+node test/score.mjs --usage usage.csv --prices prices-agile-J.csv                 # 32 kWh / 10 kW, contiguous, no export
+node test/score.mjs ... --cap 32,10 --inv 10,5 --cycle contiguous,scattered --export 0,1
+node test/score.mjs ... --alpha 0.15,0.3 --lambda 0,0.75,1 --ramp 8,16 --from 2025-08-18
+```
+
 The Python reference for the causal engine is `test/causal_model.py` — a line-for-line
 transcription of `js/optimiser.js` (primitives), `js/causal.js` (Forecaster +
 solveHorizon) and the replay loop in `js/data.js`. `test/causal.mjs` checks JS-vs-Python

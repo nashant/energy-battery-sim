@@ -63,7 +63,8 @@ to discharge are skipped inside it). The engine defaults to
 ## Correctness
 
 The optimiser is `solveHorizon` in `js/causal.js`: a greedy planner over the published
-price horizon. It first spends whatever is already in the pack on the best-valued slots,
+price horizon. It first spends whatever is already in the pack on the best-valued slots
+(holding anything worth less than the cheapest refill in the horizon),
 then books cheap-charge → dear-discharge pairs in order of spread, each one checked
 against the SOC trajectory so no plan can overfill or overdraw the pack. It is a heuristic
 by design, not a claim of optimality — the constraint that matters is causality, not the

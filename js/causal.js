@@ -82,8 +82,13 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
   // Pass 1: spend the energy already in the pack on the best-value slots anywhere.
   // It only ever discharges, and it runs first, so the slots it commits are the ones
   // pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
+  // Energy is worth at least what refilling it would cost — the cheapest chargeable
+  // slot in the horizon, pack-side — so anything valued below that is held, not spent.
+  let cheapest = Infinity;
+  for (let t = 0; t < T; t++) if (imp[t] <= cfg.maxChgP) cheapest = Math.min(cheapest, imp[t]);
+  const floor1 = Number.isFinite(cheapest) ? Math.max(0, cheapest) / cfg.eff : 0;
   for (const b of buckets) {
-    if (b.val <= MARGIN) break;               // worthless: hold instead (beyond-horizon rule)
+    if (b.val <= floor1 + MARGIN) break;      // worth less than a refill: hold instead
     const q = Math.min(b.qty, slotRem[b.t], minOver(L, b.t, T));
     if (q > EPS) commit(b, q);
   }

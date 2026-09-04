@@ -225,8 +225,15 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
     # Pass 1: spend the energy already in the pack on the best-value slots anywhere.
     # It only ever discharges, and it runs first, so the slots it commits are the ones
     # pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
+    # Energy is worth at least what refilling it would cost — the cheapest chargeable
+    # slot in the horizon, pack-side — so anything valued below that is held, not spent.
+    cheapest = math.inf
+    for t in range(T):
+        if imp[t] <= cfg['maxChgP']:
+            cheapest = min(cheapest, imp[t])
+    floor1 = max(0, cheapest) / cfg['eff'] if math.isfinite(cheapest) else 0
     for b in buckets:
-        if b['val'] <= MARGIN:
+        if b['val'] <= floor1 + MARGIN:
             break
         q = min(b['qty'], slot_rem[b['t']], _min_over(L, b['t'], T))
         if q > EPS:
@@ -427,7 +434,8 @@ def run_replay(usage, load, imp, exp, cfg, params):
             if dd is not None:
                 q = min(dd['load'] + dd['export'], soc + cin * cfg['eff'], cfg['slotOut'])
                 dl = min(load[i], q)
-                dx = min(q - dl, cfg['exportSlot']) if allow_export else 0
+                # export only what the plan booked as export
+                dx = min(q - dl, dd['export'], cfg['exportSlot']) if allow_export else 0
             planned_soc = plan['plannedSoc'][n] + cfg['reserve']
         # Self-use load-following: between planned actions the inverter covers the
         # slot's ACTUAL load from the pack — but only when the avoided import price

@@ -244,7 +244,9 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
       if (dd) {
         const q = Math.min(dd.load + dd.export, soc + cin * cfg.eff, cfg.slotOut);
         dl = Math.min(load[i], q);
-        dx = allowExport ? Math.min(q - dl, cfg.exportSlot) : 0;
+        // export only what the plan booked as export: load the forecast over-predicted
+        // stays in the pack for a later slot rather than leaving at whatever exp[i] is
+        dx = allowExport ? Math.min(q - dl, dd.export, cfg.exportSlot) : 0;
       }
       plannedSoc = plan.plannedSoc[n] + cfg.reserve;
     }

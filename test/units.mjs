@@ -373,4 +373,27 @@ ok('azimuth: 191 -> 11', bearingToAzimuth(191) === 11);
   ok('sum: typed arrays of length T', s.ac.length === 2 && s.acF2 instanceof Float64Array);
 }
 
+// ---- PvForecaster: causal lead-time choice + intra-day ratio
+import { PvForecaster } from '../js/causal.js';
+{
+  const T = 200, z = () => new Float64Array(T);
+  const pv = { ac: z(), dc: z(), acF1: z(), acF2: z(), dcF1: z(), dcF2: z() };
+  pv.acF1.fill(1.0); pv.acF2.fill(0.5); pv.ac.fill(2.0);
+  const f = new PvForecaster(pv);
+  ok('pv base uses day-1 forecast when it was issued 24 h before the slot', f.base(100, 60).ac === 1.0);
+  ok('pv base falls back to day-2 when day-1 would not exist yet', f.base(120, 60).ac === 0.5);
+  ok('pv base boundary: t - 48 == now is day-1', f.base(108, 60).ac === 1.0);
+  ok('pv cold ratio is 1', f.ratio() === 1);
+  for (let t = 0; t < 8; t++) f.settle(t);              // actual 2.0 vs forecast 1.0 -> r = 2
+  ok('pv ratio ramps to lambda after 8 daylight slots', close(f.ratio(), 1 + 0.75 * (2 - 1)));
+  const cal = new Array(T).fill('d1'); for (let t = 48; t < T; t++) cal[t] = 'd2';
+  const fc = f.forecast(8, 60, cal);
+  ok('pv forecast scales today only', close(fc.ac[0], 1.75) && close(fc.ac[45], 1.0));
+  f.completeDay();
+  ok('pv ratio resets at day end', f.ratio() === 1);
+  // null forecast values fall back to the other lead time, then 0
+  const pv2 = { ...pv, acF1: new Float64Array(T).fill(NaN), acF2: new Float64Array(T).fill(0.3) };
+  ok('pv base null day-1 falls back to day-2', new PvForecaster(pv2).base(50, 50).ac === 0.3);
+}
+
 process.exit(fail ? 1 : 0);

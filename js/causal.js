@@ -57,6 +57,46 @@ export class Forecaster {
   }
 }
 
+// PV forecaster. The plan may only read a forecast that existed at plan time: the day-1
+// value for slot t was issued 24 h before t, so it is usable only when t - 48 <= now;
+// otherwise the day-2 value stands in. Actual PV is learned per slot into an intra-day
+// ratio (today's actual / today's forecast over daylight slots), damped like the load ratio.
+export class PvForecaster {
+  constructor(pv, opts = FORECAST_DEFAULTS) {
+    this.pv = pv; this.lambdaFull = opts.lambdaFull; this.rampSlots = 8;
+    this.todayActual = 0; this.todayExpected = 0; this.daylight = 0;
+  }
+  static pick(a, b, t) {
+    const x = a[t], y = b[t];
+    return Number.isFinite(x) ? x : (Number.isFinite(y) ? y : 0);
+  }
+  base(t, now) {
+    const p = this.pv;
+    return t - 48 <= now
+      ? { ac: PvForecaster.pick(p.acF1, p.acF2, t), dc: PvForecaster.pick(p.dcF1, p.dcF2, t) }
+      : { ac: PvForecaster.pick(p.acF2, p.acF1, t), dc: PvForecaster.pick(p.dcF2, p.dcF1, t) };
+  }
+  ratio() {
+    if (this.daylight === 0 || this.todayExpected <= 1e-9) return 1;
+    const lam = this.lambdaFull * Math.min(1, this.daylight / this.rampSlots);
+    return 1 + lam * (this.todayActual / this.todayExpected - 1);
+  }
+  forecast(i, h, calKey) {
+    const r = this.ratio(), today = calKey[i];
+    const ac = new Float64Array(h - i), dc = new Float64Array(h - i);
+    for (let t = i; t < h; t++) {
+      const b = this.base(t, i), m = calKey[t] === today ? r : 1;
+      ac[t - i] = b.ac * m; dc[t - i] = b.dc * m;
+    }
+    return { ac, dc };
+  }
+  settle(t) {
+    const b = this.base(t, t), f = b.ac + b.dc, a = this.pv.ac[t] + this.pv.dc[t];
+    if (f > 1e-9 || a > 1e-9) { this.todayExpected += f; this.todayActual += a; this.daylight++; }
+  }
+  completeDay() { this.todayActual = 0; this.todayExpected = 0; this.daylight = 0; }
+}
+
 // Trajectory helpers: L[t] = usable energy at END of slot t.
 const minOver = (L, a, b) => { let m = Infinity; for (let t = a; t < b; t++) m = Math.min(m, L[t]); return m; };
 const maxOver = (L, a, b) => { let m = -Infinity; for (let t = a; t < b; t++) m = Math.max(m, L[t]); return m; };

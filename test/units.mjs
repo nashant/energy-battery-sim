@@ -297,4 +297,23 @@ ok('roi null on zero cost', roiPct(0, 1000) === null);
 ok('roi null on negative cost', roiPct(-1, 1000) === null);
 ok('roi null on non-finite saving', roiPct(3500, NaN) === null);
 
+// ---- tariff pairings: js/tariffs.js `exports` lists mirror the Smart Tariffs T&Cs
+import { IMPORT_TARIFFS, EXPORT_TARIFFS } from '../js/tariffs.js';
+const tariffExports = (k) => IMPORT_TARIFFS[k].exports;
+ok('every import lists at least one permitted export',
+   Object.values(IMPORT_TARIFFS).every((t) => Array.isArray(t.exports) && t.exports.length > 0));
+ok('every permitted export is a known export tariff',
+   Object.values(IMPORT_TARIFFS).every((t) => t.exports.every((e) => e in EXPORT_TARIFFS)));
+ok('flux pairs with flux export only (§2.7.1)',
+   tariffExports('flux').length === 1 && tariffExports('flux')[0] === 'flux-export');
+for (const k of ['go', 'cosy']) {
+  ok(`${k} permits SEG, Outgoing and Agile Outgoing`,
+     ['seg', 'outgoing-var', 'agile-outgoing'].every((e) => tariffExports(k).includes(e)));
+  ok(`${k} excludes flux export and prime`,
+     !tariffExports(k).includes('flux-export') && !tariffExports(k).includes('prime'));
+}
+ok('agile excludes flux export', !tariffExports('agile').includes('flux-export'));
+ok('go defaults to no export', tariffExports('go')[0] === 'none');
+ok('agile defaults to agile outgoing', tariffExports('agile')[0] === 'agile-outgoing');
+
 process.exit(fail ? 1 : 0);

@@ -12,29 +12,33 @@ export const REGIONS = {
   N: 'South Scotland', P: 'North Scotland',
 };
 
+// exports: the export tariffs Octopus permits with each import, default first, per the
+// Smart Tariffs T&Cs (https://octopus.energy/policies/smart-tariffs-terms-and-condition/).
 export const IMPORT_TARIFFS = {
   agile: {
     code: 'AGILE-24-10-01', name: 'Agile Octopus',
     note: 'Half-hourly wholesale-tracking prices published day-ahead. No eligibility gate.',
-    defaultExport: 'agile-outgoing',
+    exports: ['agile-outgoing', 'outgoing-var', 'prime', 'seg', 'flat', 'none'],
   },
   go: {
     code: 'GO-VAR-22-10-14', name: 'Octopus Go',
     note: 'Cheap 00:30–05:30, flat day rate. Requires an EV charged at home ' +
-          '(Smart Tariffs T&Cs §2.1.3) — Octopus can move you off if you do not have one.',
-    defaultExport: 'none',
+          '(Smart Tariffs T&Cs §2.1.3) — Octopus can move you off if you do not have one. ' +
+          'Pairs only with Outgoing SEG, Outgoing Octopus or Agile Outgoing (§2.1.2).',
+    exports: ['none', 'seg', 'outgoing-var', 'agile-outgoing', 'flat'],
   },
   flux: {
     code: 'FLUX-IMPORT-23-02-14', name: 'Octopus Flux (import)',
-    note: 'For battery owners. Cheap overnight, peak 16:00–19:00. Matched with Flux Export, ' +
-          'so no import/export pairing question.',
-    defaultExport: 'flux-export',
+    note: 'For solar + battery owners. Cheap overnight, peak 16:00–19:00. A combined ' +
+          'import/export tariff: Flux Export is the only export allowed (§2.7.1).',
+    exports: ['flux-export'],
   },
   cosy: {
     code: 'COSY-22-12-08', name: 'Cosy Octopus',
     note: 'Cheap 04:00–07:00, 13:00–16:00, 22:00–00:00; peak 16:00–19:00. Needs a heat pump, ' +
-          'electric boiler or electric radiators.',
-    defaultExport: 'agile-outgoing',
+          'electric boiler or electric radiators. Pairs only with Outgoing SEG, Outgoing ' +
+          'Octopus or Agile Outgoing (§2.6.2).',
+    exports: ['agile-outgoing', 'outgoing-var', 'seg', 'flat', 'none'],
   },
 };
 
@@ -46,7 +50,8 @@ export const EXPORT_TARIFFS = {
   prime: {
     code: 'OUTGOING-PRIME-FIX-12M-26-06-23', name: 'Prime Outgoing (9p/16p)',
     warn: 'Launched 2026-06-23, so most historical slots have no published rate and fall ' +
-          'back to the flat rate below.',
+          'back to the flat rate below. Pairing with Agile is not stated in the Smart ' +
+          'Tariffs T&Cs — check eligibility with Octopus.',
   },
   seg: { code: null, flat: 4.1, name: 'SEG (flat)' },
   flat: { code: null, flat: 12.0, name: 'Custom flat rate' },

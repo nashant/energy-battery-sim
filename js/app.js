@@ -26,12 +26,13 @@ for (const [k, v] of Object.entries(EXPORT_TARIFFS)) {
 function syncTariffUi() {
   const t = IMPORT_TARIFFS[$('importTariff').value];
   $('tariffNote').textContent = t.note;
+  for (const o of $('exportTariff').options) o.disabled = !t.exports.includes(o.value);
   const ek = $('exportTariff').value;
   $('flatWrap').classList.toggle('hide', !(ek === 'flat' || ek === 'seg' || ek === 'prime'));
   if (ek === 'seg') $('flatExport').value = 4.1;
 }
 $('importTariff').onchange = () => {
-  $('exportTariff').value = IMPORT_TARIFFS[$('importTariff').value].defaultExport;
+  $('exportTariff').value = IMPORT_TARIFFS[$('importTariff').value].exports[0];
   syncTariffUi();
 };
 $('exportTariff').onchange = syncTariffUi;
@@ -282,9 +283,9 @@ $('compare').onclick = async () => {
     const { load, add } = buildLoad(p);
     const cur = currentTariffTotal(state.usage, add, curOverride(p));
     const combos = [];
+    // every permitted pairing that has a published product (custom flat rates are UI-only)
     for (const [ik, iv] of Object.entries(IMPORT_TARIFFS)) {
-      combos.push({ ik, ek: 'none' });
-      if (iv.defaultExport !== 'none') combos.push({ ik, ek: iv.defaultExport });
+      for (const ek of iv.exports) if (ek === 'none' || EXPORT_TARIFFS[ek].code) combos.push({ ik, ek });
     }
     for (const c of combos) {
       status(`<span class="spinner"></span> ${IMPORT_TARIFFS[c.ik].name} / ${EXPORT_TARIFFS[c.ek].name}…`);

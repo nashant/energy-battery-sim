@@ -54,6 +54,10 @@ the code uses ES modules.
 - Numbers from this engine are lower than the old perfect-foresight build's —
   deliberately. Those assumed a year of hindsight; these are achievable.
 - Consumption is assumed unchanged by the tariff switch.
+- Export choices are limited to the pairings Octopus permits (Smart Tariffs T&Cs: Flux is
+  import+export only, §2.7.1; Go and Cosy pair only with Outgoing SEG, Outgoing Octopus or
+  Agile Outgoing, §2.1.2/§2.6.2). Compare runs every permitted pairing that has a published
+  product.
 
 Two cycle rules: **scattered** charges in any set of slots before discharging begins;
 **contiguous** charges at full power across a single window (slots already committed

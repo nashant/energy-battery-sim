@@ -66,6 +66,13 @@ the code uses ES modules.
   import+export only, §2.7.1; Go and Cosy pair only with Outgoing SEG, Outgoing Octopus or
   Agile Outgoing, §2.1.2/§2.6.2). Compare runs every permitted pairing that has a published
   product.
+- **Solar.** Any number of arrays (postcode, bearing, tilt, kWp, inverter, losses, AC or
+  DC coupling, cost). Actual generation is the UK Met Office 2 km model via Open-Meteo at
+  15-minute resolution; the plan sees only the day-ahead forecast that existed at plan time
+  (day-1 for slots ≤ 24 h ahead, else day-2), corrected by today's actual-to-forecast ratio.
+  PV serves the house first; surplus is stored when a later slot beats the export price,
+  otherwise exported under the G100 cap or spilled. A surplus slot never imports. DC arrays
+  share the hybrid inverter's output with discharge.
 
 ### Planner options
 
@@ -117,6 +124,7 @@ node test/replay.mjs     # offline invariants: synthetic year + 46/50-slot DST d
 node test/causal.mjs     # JS vs Python parity on fixtures, + causality guard
 node test/dom.mjs        # index.html/app.js id cross-check + FlowDiagram DOM stub
 node test/e2e.mjs        # whole-year totals via the live Octopus API
+node test/pv_fetch.mjs   # PV series builder used by the scorer, against Open-Meteo
 ```
 
 `test/score.mjs` is the offline £/yr scorer: it replays a real usage CSV against a real
@@ -131,6 +139,7 @@ node test/score.mjs ... --cap 32,10 --inv 10,5 --cycle contiguous,scattered --ex
 node test/score.mjs ... --alpha 0.15,0.3 --lambda 0,0.75,1 --ramp 8,16 --from 2025-08-18
 node test/score.mjs ... --holdFor anyCheaperRefill,laterCheaperRefill --packEnergyWorth displacedPrice,refillCost
 node test/score.mjs ... --cycles 4000,8000 --cost 3500                  # cycle wear; blank cycles = none
+node test/score.mjs ... --pv pv.json                                    # PV series from `node test/pv_fetch.mjs`
 ```
 
 The Python reference for the causal engine is `test/causal_model.py` — a line-for-line
@@ -160,4 +169,5 @@ time-shifts the load anyway.
   export. They diverge only in rare negative-price slots where the optimiser exports while
   leaving residual load on the grid. Capping gross is the conservative direction.
 - Prime Outgoing launched 2026-06-23, so historical slots fall back to a flat rate.
-- No solar/PV generation input.
+- PV is modelled from a 2 km weather model, not a site measurement; shading is not
+  modelled beyond the losses percentage.

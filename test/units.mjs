@@ -421,4 +421,28 @@ import { PvForecaster } from '../js/causal.js';
   ok('pv: absent pvF -> empty pvChg', p4.pvChg.size === 0);
 }
 
+// ---- review fix 1: a negative import price stays an unclamped (negative) candidate cost,
+// so it can pay for a low-value later slot (here 2p export vs 3p/kWh wear)
+{
+  const cfg = makeCfg({ capacity: 10, roundTrip: 0.9, dischargeFloorPct: 0, inverterKw: 5,
+                        cycleLife: 1000, batteryCost: 300 });   // wearP = 3p/kWh
+  const p = solveHorizon(0, [-5, 30, 30, 30], [0, 2, 2, 2], [0, 0, 0, 0], cfg, 'scattered', true);
+  ok('pv: negative import price is an unclamped charge candidate', (p.chg.get(0) ?? 0) > 0);
+  ok('pv: the paid-to-import energy is exported later', (p.discharge.get(1)?.export ?? 0) > 0);
+}
+
+// ---- review fix 2: contiguous discharge never lands in a slot pass 2a is PV-charging
+{
+  const cfg = makeCfg({ capacity: 10, roundTrip: 0.9, dischargeFloorPct: 0, inverterKw: 5 });
+  const T = 6;
+  const imp = [5, 5, 30, 30, 30, 30], exp = [20, 20, 20, 20, 20, 20];
+  const loadF = [0.2, 0.2, 0.2, 1.0, 1.0, 1.0];
+  const pvF = { ac: new Float64Array([0, 0, 2.0, 0, 0, 0]), dc: new Float64Array(T) };
+  const p = solveHorizon(0, imp, exp, loadF, cfg, 'contiguous', true, pvF);
+  ok('pv: contiguous run actually charges from PV', [...p.pvChg.values()].reduce((a, b) => a + b, 0) > 0);
+  const both = (m) => [...m.keys()].some((t) => (p.discharge.get(t)?.load ?? 0) + (p.discharge.get(t)?.export ?? 0) > 1e-12);
+  ok('pv: no slot both PV-charges and discharges (contiguous)', !both(p.pvChg));
+  ok('pv: no slot both grid-charges and discharges (contiguous)', !both(p.chg));
+}
+
 process.exit(fail ? 1 : 0);

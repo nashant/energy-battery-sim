@@ -181,7 +181,8 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport, pvF 
     const cand = [];
     for (let t = 0; t < T; t++) {
       if (surF[t] <= EPS && imp[t] <= cfg.maxChgP) {
-        cand.push({ t, cost: refill[t], room: chargeInSlot(cfg, defF[t]), into: chg });
+        // unclamped: a negative import price is a real negative cost to pair against
+        cand.push({ t, cost: imp[t] / cfg.eff + cfg.wearP, room: chargeInSlot(cfg, defF[t]), into: chg });
       }
     }
     pairPass(cand, buckets, chg, pvChg, disRaw, slotRem, L, cfg, T);
@@ -235,6 +236,7 @@ function contiguousPass(L, chg, pvChg, disRaw, slotRem, imp, exp, loadF, surF, c
   const T = imp.length;
   // Remaining discharge opportunity from slot s: load already served in pass 1
   // must not be counted again (load-first netting), and per-slot output caps hold.
+  // One-meter rule: a slot pass 2a already PV-charges cannot also discharge.
   const build = (s) => dischargeBuckets(imp, exp, loadF, s, allowExport, cfg)
     .map((b) => {
       const committed = disRaw.get(b.t) || 0;
@@ -243,8 +245,8 @@ function contiguousPass(L, chg, pvChg, disRaw, slotRem, imp, exp, loadF, surF, c
         : b.qty;
       return { ...b, qty: Math.min(base, slotRem[b.t]) };
     })
-    .filter((b) => b.qty > EPS);
-  // Memo, valid for the whole call: build() reads only imp/exp/loadF/cfg/disRaw/slotRem,
+    .filter((b) => b.qty > EPS && (pvChg.get(b.t) || 0) <= EPS);
+  // Memo, valid for the whole call: build() reads only imp/exp/loadF/cfg/disRaw/slotRem/pvChg,
   // and none of those are mutated between here and the window search's end. Without it
   // the search rebuilt (and re-cumulated) the same O(T) bucket list inside an O(T²)
   // double loop — O(T³ log T) for a 62-slot horizon, ~4.9s over a replayed year.

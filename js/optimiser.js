@@ -22,6 +22,9 @@ export function makeCfg(p) {
               p.maxChargePrice === '') ? Infinity : Number(p.maxChargePrice),
     // G100 export limitation: cap export power independently of inverter size
     exportSlot: p.exportLimitKw ? p.exportLimitKw * 0.5 : invSlot,
+    // planner options (README "Planner options"); defaults are the shipped behaviour
+    holdFor: p.holdFor || 'anyCheaperRefill',
+    packEnergyWorth: p.packEnergyWorth || 'displacedPrice',
   };
 }
 

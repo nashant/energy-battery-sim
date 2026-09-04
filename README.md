@@ -59,6 +59,28 @@ the code uses ES modules.
   Agile Outgoing, §2.1.2/§2.6.2). Compare runs every permitted pairing that has a published
   product.
 
+### Planner options
+
+Each defaults to the shipped behaviour; the same names are `params` fields for `runSim`,
+`--flags` for `test/score.mjs`, and selects under **Planner options** on the page.
+
+- **holdFor** — when energy already in the pack is kept rather than spent:
+  `anyCheaperRefill` (a cheaper chargeable slot exists anywhere in the plan; the shipped
+  rule), `laterCheaperRefill` (only if that slot comes *after* the one being valued, since
+  a refill cannot replace energy spent before it), or `never`.
+- **packEnergyWorth** — how existing energy is valued when spent: `displacedPrice` (the
+  import price it avoids; shipped) or `refillCost` (load that a later refill can serve is
+  worth no more than that refill, so existing energy goes to export and to load before the
+  refill instead of to tomorrow's load).
+- **priceHorizon** — `published` (tomorrow's prices arrive at 16:00; shipped) or
+  `knownSchedule48h` (plan 48 h ahead on the import schedule, with export beyond the
+  published boundary taken from yesterday's same slot). Honest only for fixed time-of-use
+  tariffs such as Go, Cosy and Flux; on Agile it is hindsight.
+- **replanEvery** — half-hours between re-plans (1; publication and plan expiry always
+  re-plan).
+
+Scores on a real year are in `docs/plans/2026-09-04-planner-scoring.md`.
+
 Two cycle rules: **scattered** charges in any set of slots before discharging begins;
 **contiguous** charges at full power across a single window (slots already committed
 to discharge are skipped inside it). The engine defaults to
@@ -99,6 +121,7 @@ cold start is lived through but not scored.
 node test/score.mjs --usage usage.csv --prices prices-agile-J.csv                 # 32 kWh / 10 kW, contiguous, no export
 node test/score.mjs ... --cap 32,10 --inv 10,5 --cycle contiguous,scattered --export 0,1
 node test/score.mjs ... --alpha 0.15,0.3 --lambda 0,0.75,1 --ramp 8,16 --from 2025-08-18
+node test/score.mjs ... --holdFor anyCheaperRefill,laterCheaperRefill --packEnergyWorth displacedPrice,refillCost
 ```
 
 The Python reference for the causal engine is `test/causal_model.py` — a line-for-line

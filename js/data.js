@@ -209,12 +209,22 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
   let plan = null, planStart = 0, planMaxChgP = 0;      // plan covers [planStart, horizon)
   let horizon = dayEnd.get(agileKey[0]);
   let dayBuf = new Array(48).fill(null);                // actuals by slotOfDay
+  // priceHorizon 'knownSchedule48h': a fixed time-of-use import schedule is known ahead,
+  // so plan 48 h out; export beyond the published boundary is yesterday's same slot.
+  // Hindsight on Agile — only honest for Go, Cosy and Flux.
+  const known = params.priceHorizon === 'knownSchedule48h';
+  let pubEnd = horizon;                                 // end of published export prices
+  const extend = (h, i) => (known ? Math.min(T, Math.max(h, i + 96)) : h);
+  const every = Math.max(1, Math.trunc(params.replanEvery || 1));
 
   const replanAt = (i, h) => {
     const entries = [];
     for (let t = i; t < h; t++) entries.push({ date: calKey[t], slotOfDay: slotOfDay(usage.wall[t]) });
     const loadF = fc.forecast(entries, calKey[i]);
-    plan = solveHorizon(soc, imp.slice(i, h), exp.slice(i, h), loadF, cfg, mode, allowExport);
+    const expS = known
+      ? exp.slice(i, h).map((v, k) => { let t = i + k; while (t >= pubEnd) t -= 48; return exp[t]; })
+      : exp.slice(i, h);
+    plan = solveHorizon(soc, imp.slice(i, h), expS, loadF, cfg, mode, allowExport);
     planStart = i; horizon = h; replans++;
     // marginal refill price: the dearest slot the plan charges in. A plan that books no
     // charging (pack already full for its horizon) keeps the last booked price, so
@@ -224,7 +234,7 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     if (m > 0) planMaxChgP = m;
   };
 
-  if (params.useBattery !== false) replanAt(0, horizon);
+  if (params.useBattery !== false) replanAt(0, extend(horizon, 0));
 
   for (let i = 0; i < T; i++) {
     // publication: first slot of each calendar day at/after 16:00 extends the horizon
@@ -269,7 +279,8 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
     const dayDone = i + 1 === T || calKey[i + 1] !== calKey[i];
     if (dayDone) { fc.completeDay(calKey[i], dayBuf); dayBuf = new Array(48).fill(null); }
 
-    // Receding horizon: re-plan at the start of every slot from the current SOC and the
+    // Receding horizon: re-plan at the start of every slot (or every `replanEvery`
+    // slots; publication and plan expiry always replan) from the current SOC and the
     // forecast as it now stands. Publication extends the horizon to the end of the NEXT
     // tariff-day; otherwise the standing horizon (prices already published) is kept.
     if (params.useBattery !== false && i + 1 < T) {
@@ -277,8 +288,11 @@ export function runReplay(usage, load, imp, exp, cfg, params) {
       if (publishes) {
         const next = dayEnd.get(agileKey[Math.min(dayEnd.get(agileKey[i]), T - 1)]) ?? T;
         h = Math.max(next, dayEnd.get(agileKey[i]));
+        pubEnd = Math.max(pubEnd, h);
       }
-      replanAt(i + 1, h);
+      if (publishes || i + 1 >= horizon || (i + 1 - planStart) % every === 0) {
+        replanAt(i + 1, extend(h, i + 1));
+      }
     }
   }
   return { slots, replans, warmupDays: FORECAST_DEFAULTS.warmupDays };

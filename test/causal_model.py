@@ -52,6 +52,9 @@ def make_cfg(p):
         'importCap': p['totalImportLimitKw'] * 0.5 if p.get('totalImportLimitKw') else None,
         'maxChgP': INF if mcp is None or mcp == '' else float(mcp),
         'exportSlot': p['exportLimitKw'] * 0.5 if p.get('exportLimitKw') else inv_slot,
+        # planner options (README "Planner options"); defaults are the shipped behaviour
+        'holdFor': p.get('holdFor') or 'anyCheaperRefill',
+        'packEnergyWorth': p.get('packEnergyWorth') or 'displacedPrice',
     }
 
 
@@ -227,14 +230,48 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export):
     # pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
     # Energy is worth at least what refilling it would cost — the cheapest chargeable
     # slot in the horizon, pack-side — so anything valued below that is held, not spent.
+    # cfg['holdFor'] picks the refill that sets the floor (anywhere / after the slot /
+    # none); cfg['packEnergyWorth'] == 'refillCost' caps a LOAD bucket at the cheapest
+    # charge cost before it, so load a refill can serve is left to pass 2.
     cheapest = math.inf
     for t in range(T):
         if imp[t] <= cfg['maxChgP']:
             cheapest = min(cheapest, imp[t])
     floor1 = max(0, cheapest) / cfg['eff'] if math.isfinite(cheapest) else 0
-    for b in buckets:
-        if b['val'] <= floor1 + MARGIN:
-            break
+    suf_min = [math.inf] * T
+    pre_min = [math.inf] * T
+    m = math.inf
+    for t in range(T - 1, -1, -1):
+        suf_min[t] = m
+        if imp[t] <= cfg['maxChgP']:
+            m = min(m, imp[t])
+    m = math.inf
+    for t in range(T):
+        pre_min[t] = m
+        if imp[t] <= cfg['maxChgP']:
+            m = min(m, imp[t])
+
+    def pack_cost(p):
+        return max(0, p) / cfg['eff'] if math.isfinite(p) else 0
+
+    def floor_at(t):
+        if cfg['holdFor'] == 'never':
+            return 0
+        if cfg['holdFor'] == 'laterCheaperRefill':
+            return pack_cost(suf_min[t])
+        return floor1
+
+    refill_cost = cfg['packEnergyWorth'] == 'refillCost'
+
+    def worth(b):
+        if refill_cost and b['kind'] == 'load' and math.isfinite(pre_min[b['t']]):
+            return min(b['val'], pack_cost(pre_min[b['t']]))
+        return b['val']
+
+    order1 = sorted(buckets, key=lambda b: -worth(b)) if refill_cost else buckets
+    for b in order1:
+        if worth(b) <= floor_at(b['t']) + MARGIN:
+            continue
         q = min(b['qty'], slot_rem[b['t']], _min_over(L, b['t'], T))
         if q > EPS:
             commit(b, q)
@@ -394,13 +431,30 @@ def run_replay(usage, load, imp, exp, cfg, params):
     plan_max_chg_p = 0
     horizon = day_end[agile_key[0]]
     day_buf = [None] * 48
+    # priceHorizon 'knownSchedule48h': import schedule known ahead, plan 48 h out; export
+    # beyond the published boundary is yesterday's same slot.
+    known = params.get('priceHorizon') == 'knownSchedule48h'
+    pub_end = horizon
+    every = max(1, int(params.get('replanEvery') or 1))
+
+    def extend(h, i):
+        return min(T, max(h, i + 96)) if known else h
 
     def replan_at(i, h):
         nonlocal plan, plan_start, horizon, replans, plan_max_chg_p
         entries = [{'date': cal_key[t], 'slotOfDay': slot_of_day(usage['wall'][t])}
                    for t in range(i, h)]
         load_f = fc.forecast(entries, cal_key[i])
-        plan = solve_horizon(soc, imp[i:h], exp[i:h], load_f, cfg, mode, allow_export)
+        if known:
+            exp_s = []
+            for k in range(h - i):
+                t = i + k
+                while t >= pub_end:
+                    t -= 48
+                exp_s.append(exp[t])
+        else:
+            exp_s = exp[i:h]
+        plan = solve_horizon(soc, imp[i:h], exp_s, load_f, cfg, mode, allow_export)
         plan_start = i
         horizon = h
         replans += 1
@@ -414,7 +468,7 @@ def run_replay(usage, load, imp, exp, cfg, params):
             plan_max_chg_p = m
 
     if params.get('useBattery') is not False:
-        replan_at(0, horizon)
+        replan_at(0, extend(horizon, 0))
 
     for i in range(T):
         # publication: first slot of each calendar day at/after 16:00 extends the horizon
@@ -469,7 +523,9 @@ def run_replay(usage, load, imp, exp, cfg, params):
                 if nxt is None:
                     nxt = T
                 h = max(nxt, day_end[agile_key[i]])
-            replan_at(i + 1, h)
+                pub_end = max(pub_end, h)
+            if publishes or i + 1 >= horizon or (i + 1 - plan_start) % every == 0:
+                replan_at(i + 1, extend(h, i + 1))
 
     return slots, replans, FORECAST_DEFAULTS['warmupDays']
 

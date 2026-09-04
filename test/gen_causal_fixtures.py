@@ -46,6 +46,15 @@ CASES = [
     ('scattered-capped',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=20.0), 1.0),
     ('scattered-exphigh', dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None), 2.2),
     ('contig-exphigh',    dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None), 2.2),
+    # planner options (each default-off switch exercised at least once)
+    ('contig-holdlater',  dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               holdFor='laterCheaperRefill'), 1.0),
+    ('scattered-refill',  dict(cycle='scattered',  allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               holdFor='laterCheaperRefill', packEnergyWorth='refillCost'), 1.0),
+    ('contig-known48',    dict(cycle='contiguous', allowExport=True,  exportLimitKw=None, maxChargePrice=None,
+                               priceHorizon='knownSchedule48h', replanEvery=2), 1.0),
+    ('scattered-never',   dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=None,
+                               holdFor='never', packEnergyWorth='refillCost'), 1.0),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)

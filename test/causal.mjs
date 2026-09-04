@@ -34,7 +34,10 @@ for (const c of cases) {
 
   // causality: everything at/after the cut is garbage — prices inverted to absurd
   // values and load quadrupled. Nothing decided before the reveal may notice.
-  const imp2 = c.imp.map((v, i) => (i >= CUT ? 999 : v));
+  // priceHorizon 'knownSchedule48h' reads the import schedule ahead by design (a fixed
+  // time-of-use tariff), so only export and load are garbled for that case.
+  const knownImp = c.params.priceHorizon === 'knownSchedule48h';
+  const imp2 = c.imp.map((v, i) => (i >= CUT && !knownImp ? 999 : v));
   const exp2 = c.exp.map((v, i) => (i >= CUT ? -999 : v));
   const load2 = c.load.map((v, i) => (i >= CUT ? 17 : v));
   const a = runReplay(c.usage, c.load, c.imp, c.exp, cfg, c.params).slots;

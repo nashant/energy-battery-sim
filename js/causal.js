@@ -82,13 +82,28 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport) {
   // Pass 1: spend the energy already in the pack on the best-value slots anywhere.
   // It only ever discharges, and it runs first, so the slots it commits are the ones
   // pass 2 must then refuse to charge (one-meter rule, enforced in pass 2 below).
-  // Energy is worth at least what refilling it would cost — the cheapest chargeable
-  // slot in the horizon, pack-side — so anything valued below that is held, not spent.
+  // Energy is worth at least what refilling it would cost, pack-side, so anything valued
+  // below that is held, not spent. cfg.holdFor picks the refill that sets the floor:
+  // the cheapest chargeable slot anywhere in the horizon, or only one AFTER the slot
+  // being valued (energy spent before the refill cannot be replaced by it), or none.
+  // cfg.packEnergyWorth 'refillCost' values a LOAD bucket at no more than the cheapest
+  // charge cost before it: load a refill can serve is left to pass 2, so existing energy
+  // goes to export and to load before the refill instead of to tomorrow's load.
   let cheapest = Infinity;
   for (let t = 0; t < T; t++) if (imp[t] <= cfg.maxChgP) cheapest = Math.min(cheapest, imp[t]);
   const floor1 = Number.isFinite(cheapest) ? Math.max(0, cheapest) / cfg.eff : 0;
-  for (const b of buckets) {
-    if (b.val <= floor1 + MARGIN) break;      // worth less than a refill: hold instead
+  const sufMin = new Float64Array(T), preMin = new Float64Array(T);
+  for (let t = T - 1, m = Infinity; t >= 0; t--) { sufMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
+  for (let t = 0, m = Infinity; t < T; t++) { preMin[t] = m; if (imp[t] <= cfg.maxChgP) m = Math.min(m, imp[t]); }
+  const packCost = (p) => (Number.isFinite(p) ? Math.max(0, p) / cfg.eff : 0);
+  const floorAt = (t) => cfg.holdFor === 'never' ? 0
+    : cfg.holdFor === 'laterCheaperRefill' ? packCost(sufMin[t]) : floor1;
+  const refillCost = cfg.packEnergyWorth === 'refillCost';
+  const worth = (b) => refillCost && b.kind === 'load' && Number.isFinite(preMin[b.t])
+    ? Math.min(b.val, packCost(preMin[b.t])) : b.val;
+  const order1 = refillCost ? [...buckets].sort((a, b) => worth(b) - worth(a)) : buckets;
+  for (const b of order1) {
+    if (worth(b) <= floorAt(b.t) + MARGIN) continue;   // worth less than a refill: hold
     const q = Math.min(b.qty, slotRem[b.t], minOver(L, b.t, T));
     if (q > EPS) commit(b, q);
   }

@@ -93,3 +93,50 @@ so it would need a coarser grid or a bang-bang action set to run per slot in the
 4. Investigate the scattered execution loss with the harness before offering scattered as
    an option users should pick; and prototype an exact per-horizon solver against the DP
    bound.
+
+## Go import + Agile Outgoing export: why the pack never exported (2026-09-04, later)
+
+Screenshots of two consecutive Go days showed evening export at ~15-25p, overnight charge
+at ~8.5p (9.3p pack-side) and zero export. Two agents traced it independently (synthetic
+reproduction and real-data ablation); the cause is pass 1's valuation of energy already in
+the pack, not any export rule:
+
+1. Before 16:00 the horizon ends at 23:00 today and contains no cheap slot, so the hold
+   floor (cheapest chargeable price in the horizon / eff) is 29.37/0.9 = 32.6p, above every
+   load and export bucket: pass 1 holds everything and only load-following spends it.
+2. After 16:00 the horizon includes tomorrow; tomorrow's 29p load slots outrank today's
+   15-25p export slots in the value-sorted bucket list, so the pack is reserved for load
+   that tonight's 9.3p refill could serve. Pass 2 cannot pair tonight's charge with today's
+   export because the charge must precede the discharge.
+
+Shipped engine on the real year: £1,132/yr saving, 486 kWh exported on 138 days. Load-
+adjusted ceiling for this pair ≈ £525/yr of export margin.
+
+### Planner options (now flags; defaults = shipped) — £/yr saving, contiguous
+
+| holdFor / packEnergyWorth | Go+Outgoing 32/10 | Agile+Outgoing 32/10 | Agile no-exp 32/10 | Go 10/5 | Agile+Outgoing 10/5 | Agile no-exp 10/5 |
+|---|---|---|---|---|---|---|
+| anyCheaperRefill / displacedPrice (shipped) | 1132 (486 kWh exp) | 635 | 403 | 684 | 378 | 353 |
+| anyCheaperRefill / refillCost | **1356** (2,632) | **657** | **474** | **685** | **391** | **375** |
+| laterCheaperRefill / displacedPrice | 1291 (5,349) | 641 | 462 | 586 | 377 | 368 |
+| laterCheaperRefill / refillCost | 1283 (5,438) | 651 | 474 | 581 | 384 | 375 |
+| never / displacedPrice | 1138 | | | 684 | | |
+| never / refillCost | 1361 (2,705) | | | 685 | | |
+
+- `packEnergyWorth: refillCost` (load a later refill can serve is valued at that refill's
+  cost, so existing energy goes to export and to load before the refill) never loses on
+  any tariff or size tested: +£224 on Go with export, +£22 to +£71 on Agile. An earlier
+  variant that also capped *export* buckets lost £60-75 because existing energy was then
+  never planned for export; the shipped flag caps load only.
+- `holdFor: laterCheaperRefill` helps 32 kWh packs (+£159 Go, +£59 Agile no-export) but
+  costs the 10 kWh / 5 kW pack ~£100 on Go: it exports energy the house needs after the
+  23:00 horizon end. Off by default.
+- `priceHorizon: knownSchedule48h` (48-slot rolling horizon on the Go schedule) was
+  neutral at 48 slots and harmful at 96 in the earlier sweep (contiguous £694, scattered
+  £1,086 vs £1,132), likely because contiguous books one charge window per plan and keeps
+  choosing tomorrow night's. Off by default; kept as a flag for further work.
+- `replanEvery` 2 / 4 / 48: 1132 / 1131 / 1124 on Go, 634 / 632 / 583 on Agile with export.
+  Every slot stays the default.
+
+Recommendation: consider making `packEnergyWorth: refillCost` the default after a second
+household's data confirms it; the other flags stay opt-in.

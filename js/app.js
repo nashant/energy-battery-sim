@@ -804,26 +804,17 @@ function drawDayChart(slots) {
 
   const path = (vals, fn) => vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${fn(v).toFixed(1)}`).join('');
   const socPath = `M${x(0)},${B} ` + slots.map((s, i) => `L${x(i).toFixed(1)},${ys(s.soc).toFixed(1)}`).join(' ') + ` L${x(n - 1)},${B} Z`;
-  // Dashed planned-SOC line. In contiguous mode the plan credits a whole charge
-  // window's energy at its first slot, so this steps up at window start rather
-  // than ramping — a known display artefact of the plan, not a bug.
-  // A slot outside any plan's coverage has no planned SOC; the dashed line must break
-  // there rather than draw a straight segment across the gap, so each run of covered
-  // slots starts a fresh subpath with M.
-  const planPts = slots.map((s, i) => !Number.isFinite(s.plannedSoc)
-    ? null : `${x(i).toFixed(1)},${ys(Math.min(s.plannedSoc, cap)).toFixed(1)}`);
-  let planPath = '', penDown = false;
-  for (const p of planPts) {
-    if (p === null) { penDown = false; continue; }
-    planPath += `${penDown ? ' L' : (planPath ? ' M' : 'M')}${p}`;
-    penDown = true;
-  }
-  // PV on the same panel but its own scale: half-hourly PV kWh is far smaller than the
-  // pack's kWh, so it is drawn against the day's own peak in the lower 60% of the panel.
-  const pvMax = Math.max(1e-9, ...slots.map((s) => s.pvGen || 0), ...slots.map((s) => s.pvFc || 0));
-  const yp = (v) => B - (v / pvMax) * (B - T) * 0.6;
-  const pvPath = pvMax > 1e-6 ? `M${x(0)},${B} ` + slots.map((s, i) => `L${x(i).toFixed(1)},${yp(s.pvGen || 0).toFixed(1)}`).join(' ') + ` L${x(n - 1)},${B} Z` : '';
-  const pvFcPath = pvMax > 1e-6 ? slots.map((s, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yp(s.pvFc || 0).toFixed(1)}`).join('') : '';
+  // The planned SOC is in the hover readout, not drawn: a third dashed line made the
+  // panel unreadable. (In contiguous mode it steps at a charge window's first slot, a
+  // display artefact of the plan crediting the whole window there.)
+  // House load and PV share one half-hourly kWh scale, drawn against the day's own peak
+  // in the lower 60% of the panel: both are far smaller than the pack's kWh.
+  const kwhMax = Math.max(1e-9, ...slots.map((s) => Math.max(s.load, s.pvGen || 0, s.pvFc || 0)));
+  const yp = (v) => B - (v / kwhMax) * (B - T) * 0.6;
+  const hasPv = slots.some((s) => (s.pvGen || 0) > 1e-6 || (s.pvFc || 0) > 1e-6);
+  const pvPath = hasPv ? `M${x(0)},${B} ` + slots.map((s, i) => `L${x(i).toFixed(1)},${yp(s.pvGen || 0).toFixed(1)}`).join(' ') + ` L${x(n - 1)},${B} Z` : '';
+  const pvFcPath = hasPv ? slots.map((s, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${yp(s.pvFc || 0).toFixed(1)}`).join('') : '';
+  const loadPath = path(slots.map((s) => s.load), yp);
 
   const bars = slots.map((s, i) => {
     const w = (R - L) / n - 1;
@@ -839,7 +830,7 @@ function drawDayChart(slots) {
     ${pvPath ? `<path d="${pvPath}" fill="var(--sun)" opacity=".22"/>` +
       `<path d="${pvFcPath}" fill="none" stroke="var(--sun)" stroke-width="1" stroke-dasharray="3 3" opacity=".8"/>` : ''}
     <path d="${socPath}" fill="var(--batt)" opacity=".16"/>
-    ${planPath ? `<path d="${planPath}" fill="none" stroke="var(--batt)" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/>` : ''}
+    <path d="${loadPath}" fill="none" stroke="var(--fg)" stroke-width="1.4" opacity=".7"/>
     <path d="${path(exps, y)}" fill="none" stroke="var(--good)" stroke-width="1.6" opacity=".85"/>
     <path d="${path(imps, y)}" fill="none" stroke="var(--acc)" stroke-width="1.9"/>
     ${bars}
@@ -851,14 +842,17 @@ function drawDayChart(slots) {
     <text x="${(L + R) / 2 - 40}" y="${H - 4}" fill="var(--dim)" font-size="10">bars = battery activity</text>
     <g id="hoverG" visibility="hidden" pointer-events="none">
       <rect id="hoverLine" x="${L}" y="${T}" width="1.2" height="${B - T}" fill="var(--fg)" opacity=".8"/>
-      <rect id="hoverBg" x="0" y="${T}" width="86" height="40" rx="3" fill="var(--panel2, #000)" opacity=".85"/>
+      <rect id="hoverBg" x="0" y="${T}" width="124" height="64" rx="3" fill="var(--panel2, #000)" opacity=".9"/>
       <text id="hoverTime" y="${T + 12}" fill="var(--fg)" font-size="10"></text>
       <text id="hoverImp" y="${T + 24}" fill="var(--acc)" font-size="10"></text>
       <text id="hoverExp" y="${T + 36}" fill="var(--good)" font-size="10"></text>
+      <text id="hoverLoad" y="${T + 48}" fill="var(--fg)" font-size="10"></text>
+      <text id="hoverSoc" y="${T + 60}" fill="var(--batt)" font-size="10"></text>
     </g>`;
 }
 
-// Hover readout: vertical line + import/export price at the pointer's slot.
+// Hover readout: vertical line + prices, house load and actual/planned SOC at the
+// pointer's slot.
 // Listeners live on the SVG (kept across redraws); the group is per-draw, so
 // look it up each event. Snaps to slot centres, flips sides past halfway.
 $('dayChart').addEventListener('pointermove', (e) => {
@@ -872,12 +866,17 @@ $('dayChart').addEventListener('pointermove', (e) => {
   const left = cx <= 250;
   document.getElementById('hoverLine').setAttribute('x', cx - 0.6);
   const bg = document.getElementById('hoverBg');
-  bg.setAttribute('x', left ? cx + 4 : cx - 90);
+  bg.setAttribute('x', left ? cx + 4 : cx - 128);
+  const cap = state.run.p.capacity;
+  const soc = `soc ${s.soc.toFixed(1)}` + (Number.isFinite(s.plannedSoc)
+    ? ` · plan ${Math.min(s.plannedSoc, cap).toFixed(1)} kWh` : ' kWh');
   for (const [id, text] of [['hoverTime', s.hhmm],
                             ['hoverImp', `imp ${s.imp.toFixed(2)} p/kWh`],
-                            ['hoverExp', `exp ${s.exp.toFixed(2)} p/kWh`]]) {
+                            ['hoverExp', `exp ${s.exp.toFixed(2)} p/kWh`],
+                            ['hoverLoad', `load ${s.load.toFixed(2)} kWh`],
+                            ['hoverSoc', soc]]) {
     const t = document.getElementById(id);
-    t.setAttribute('x', left ? cx + 9 : cx - 85);
+    t.setAttribute('x', left ? cx + 9 : cx - 123);
     t.textContent = text;
   }
   g.setAttribute('visibility', 'visible');

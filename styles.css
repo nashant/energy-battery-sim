@@ -108,6 +108,7 @@ tr.cur td { background:color-mix(in srgb, var(--acc) 14%, transparent); font-wei
 .legend i.sw-batt { background:var(--batt); }
 .legend i.sw-good { background:var(--good); }
 .legend i.sw-sun { background:var(--sun); }
+.legend i.sw-fg { background:var(--fg); opacity:.7; }
 
 /* Collapsible settings. On mobile the six control panels otherwise push every result
    off-screen; the Run buttons live OUTSIDE the <details> so they stay reachable when

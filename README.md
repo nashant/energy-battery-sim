@@ -50,9 +50,9 @@ the code uses ES modules.
   actual. Between planned actions the inverter load-follows in self-use mode —
   covering actual load the forecast missed — but only when the avoided import
   price beats the plan's marginal refill cost, so the pack is never drained into
-  slots cheaper than refilling it. A dashed line on the day chart shows what the
-  plan expected the state of charge to be; the solid area shows what actually
-  happened.
+  slots cheaper than refilling it. The day chart's shaded area is the actual state
+  of charge; hovering a slot shows what the plan expected it to be, with the prices
+  and the house load (drawn as a line on the solar scale).
 - Numbers from this engine are lower than the old perfect-foresight build's —
   deliberately. Those assumed a year of hindsight; these are achievable.
 - Consumption is assumed unchanged by the tariff switch.

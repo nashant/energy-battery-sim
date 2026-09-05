@@ -1,6 +1,6 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
-import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
+import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, lifetimeReturn, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 import { lookupPostcode, buildPv } from './solar.js';
 
@@ -342,6 +342,7 @@ function params() {
     inverterCost: num('inverterCost'),
     installCost: num('installCost'),
     escPct: num('escPct') || 0,
+    lifeYears: num('lifeYears'),
     allowExport: $('exportTariff').value !== 'none',
     curSource: $('curSource').value,
     curUnitRate: num('curUnitRate'),
@@ -441,7 +442,7 @@ $('compare').onclick = async () => {
                           params: { ...p, allowExport: c.ek !== 'none', useBattery: false } });
       rows.push({ ...c, wb, nb, note: IMPORT_TARIFFS[c.ik].note });
     }
-    renderCompare(rows, cur, systemCost(p), p.escPct);
+    renderCompare(rows, cur, systemCost(p), p);
     status('done');
   } catch (e) {
     showError(e.message);
@@ -563,6 +564,12 @@ function render() {
   const roiCur = roiPct(invest, pbSave);
   const roiBatt = roiPct(battCost, withBat.savedVsNoBattery * annual);
   const fmtRoi = (r) => r === null ? '' : ` · ${r.toFixed(1)}%/yr`;
+  // return over the battery's life: the typed lifespan, cut short by the cycle life when
+  // that runs out sooner
+  const life = lifeSpan(p, withBat, annual);
+  const ltCur = life ? lifetimeReturn(invest, pbSave, life.years, p.escPct) : null;
+  const ltBatt = life ? lifetimeReturn(battCost, withBat.savedVsNoBattery * annual, life.years, p.escPct) : null;
+  const fmtNet = (lt) => `${lt.net >= 0 ? '+' : ''}${gbp(lt.net)} · ${lt.pct.toFixed(0)}%`;
   // Investment breakdown; with neither solar nor a heat pump the single total reads better.
   const costParts = solarCost > 0 || hpCost > 0 ? [
     `${gbp(battCost)} battery`,
@@ -594,6 +601,11 @@ function render() {
       ...(p.escPct > 0 ? [`prices rising ${p.escPct}%/yr — ROI is the year-1 floor`] : []),
       ...(pbBatt !== null ? [`${fmtYears(pbBatt)}${fmtRoi(roiBatt)} counting only what the battery adds`] : []),
     ].join(' · ')) : ''}
+    ${ltCur ? card('Lifetime return', fmtNet(ltCur), [
+      `${gbp(ltCur.saved)} saved over ${life.years.toFixed(1)} yrs (${life.src}) − ${gbp(invest)} invested`,
+      ...(p.escPct > 0 ? [`prices rising ${p.escPct}%/yr`] : []),
+      ...(ltBatt ? [`${fmtNet(ltBatt)} counting only what the battery adds`] : []),
+    ].join(' · '), ltCur.net >= 0 ? 'pos' : 'neg') : ''}
   `;
 
   const w = [...prices.warnings];
@@ -640,7 +652,22 @@ const card = (k, v, d, cls = '') =>
 const systemCost = (p) => (p.batteryCost || 0) + (p.inverterCost || 0) + (p.installCost || 0) + (p.solarCost || 0);
 const fmtYears = (y) => (y === null ? '—' : y > 99 ? '>99 yrs' : `${y.toFixed(1)} yrs`);
 
-function renderCompare(rows, cur, cost = 0, escPct = 0) {
+// Years the battery is planned for: the typed lifespan, cut short when the cycle life runs
+// out sooner at this run's cycling rate. Cycles never lengthen it — a pack cycled 150 times
+// a year would "last" 40 years on a 6,000-cycle rating, and calendar ageing says otherwise —
+// so with no lifespan typed there is no figure.
+function lifeSpan(p, wb, annual) {
+  const typed = p.lifeYears > 0 ? p.lifeYears : null;
+  if (typed === null) return null;
+  const cyc = p.cycleLife > 0 && wb.stored > 0 && wb.usableCap > 0
+    ? p.cycleLife / (wb.stored / wb.usableCap * annual) : null;
+  return cyc !== null && cyc < typed
+    ? { years: cyc, src: `${p.cycleLife.toLocaleString('en-GB')} cycles run out first` }
+    : { years: typed, src: 'lifespan entered' };
+}
+
+function renderCompare(rows, cur, cost = 0, p = {}) {
+  const escPct = p.escPct || 0;
   $('intro').classList.add('hide');
   $('results').classList.remove('hide');
   if (!WIDE()) $('controls').open = false;
@@ -649,7 +676,7 @@ function renderCompare(rows, cur, cost = 0, escPct = 0) {
   const best = rows[0];
   $('compareTable').innerHTML =
     `<thead><tr><th>Import</th><th>Export</th><th>No battery</th><th>With battery</th>
-      <th>Saves vs current</th><th>Battery adds</th><th>Payback</th><th>kWh cycled</th></tr></thead><tbody>` +
+      <th>Saves vs current</th><th>Battery adds</th><th>Payback</th><th>Lifetime return</th><th>kWh cycled</th></tr></thead><tbody>` +
     rows.map((r) => `<tr class="${r === best ? 'best' : ''}">
       <td title="${r.note.replace(/"/g, '&quot;')}">${IMPORT_TARIFFS[r.ik].name}</td>
       <td>${r.ek === 'none' ? '—' : EXPORT_TARIFFS[r.ek].name}</td>
@@ -657,9 +684,12 @@ function renderCompare(rows, cur, cost = 0, escPct = 0) {
       <td class="${cur.total - r.wb.total >= 0 ? 'pos' : 'neg'}">${gbp(cur.total - r.wb.total)}</td>
       <td>${gbp(r.wb.savedVsNoBattery)}</td>
       <td>${fmtYears(paybackYears(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, escPct))}</td>
+      ${(() => { const life = lifeSpan(p, r.wb, 365 / r.wb.nDays);
+                 const lt = life ? lifetimeReturn(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, life.years, escPct) : null;
+                 return lt ? `<td class="${lt.net >= 0 ? 'pos' : 'neg'}" title="over ${life.years.toFixed(1)} yrs (${life.src})">${lt.net >= 0 ? '+' : ''}${gbp(lt.net)}</td>` : '<td>—</td>'; })()}
       <td>${r.wb.cycled.toFixed(0)}</td></tr>`).join('') +
     `</tbody><tfoot><tr><td>Current tariff</td><td>—</td><td>${gbp(cur.total)}</td>
-      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tfoot>`;
+      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tfoot>`;
 }
 
 function renderMonths() {

@@ -485,6 +485,16 @@ export const paybackYears = (cost, savePerYear, escPct = 0) => {
   return x > 0 ? Math.log(x) / Math.log(1 + e) : null;
 };
 
+// Return over the battery's life: savings accumulated over `years` at the escalation rate
+// (same geometric form as paybackYears, so the two agree: the return at the payback year
+// is zero), less the cost. null without a positive cost or a usable lifespan.
+export function lifetimeReturn(cost, savePerYear, years, escPct = 0) {
+  if (!(cost > 0) || !(years > 0) || !Number.isFinite(years) || !Number.isFinite(savePerYear)) return null;
+  const e = (escPct || 0) / 100;
+  const saved = e === 0 ? savePerYear * years : savePerYear * (Math.pow(1 + e, years) - 1) / e;
+  return { saved, net: saved - cost, pct: (saved - cost) / cost * 100 };
+}
+
 // £ the gas meter cost over the CSV window: matched gas kWh at the unit rate plus the
 // standing charge. Matched = metered minus the kWh that fell outside the electricity
 // date range (heatPumpFromGas already reports both). No gas data or no rate -> 0;

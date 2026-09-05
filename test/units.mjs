@@ -1,5 +1,5 @@
 // Unit tests for the pure helpers in js/data.js — no network, no DOM.
-import { paybackYears, sweepCapacities, sweepInverters, parseGas, gasImpliedRates } from '../js/data.js';
+import { paybackYears, lifetimeReturn, sweepCapacities, sweepInverters, parseGas, gasImpliedRates } from '../js/data.js';
 
 let fail = 0;
 const ok = (name, cond) => { console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}`); if (!cond) fail++; };
@@ -22,6 +22,16 @@ ok('payback -3%/yr cumulative crossing',
    close(1000 * (Math.pow(0.97, nNeg) - 1) / -0.03, 3500, 1e-6));
 // deflation steep enough that the saving never accumulates to the cost -> null
 ok('payback null when deflation never repays', paybackYears(3500, 1000, -50) === null);
+
+// lifetime return: savings accumulated over the life, less cost
+ok('lifetime e=0 is save*years - cost', close(lifetimeReturn(3500, 1000, 10, 0).net, 6500));
+ok('lifetime pct is net over cost', close(lifetimeReturn(3500, 1000, 10, 0).pct, 6500 / 3500 * 100));
+ok('lifetime 5%/yr matches the year-by-year sum',
+   close(lifetimeReturn(3500, 1000, 10, 5).saved, [...Array(10)].reduce((a, _, y) => a + 1000 * Math.pow(1.05, y), 0)));
+ok('lifetime return is zero at the payback year', Math.abs(lifetimeReturn(3500, 1000, paybackYears(3500, 1000, 5), 5).net) < 1e-6);
+ok('lifetime loss reported when the life is too short', lifetimeReturn(3500, 1000, 2, 0).net < 0);
+ok('lifetime null without a lifespan', lifetimeReturn(3500, 1000, null, 0) === null && lifetimeReturn(3500, 1000, Infinity) === null);
+ok('lifetime null on zero cost', lifetimeReturn(0, 1000, 10) === null);
 
 // guards
 ok('payback null on zero cost', paybackYears(0, 1000, 5) === null);

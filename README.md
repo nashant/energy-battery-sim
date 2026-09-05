@@ -62,6 +62,10 @@ the code uses ES modules.
   Reported separately as £/yr and as cycles per year against the quoted life; it is not
   subtracted from the energy saving or counted again in payback, which already uses the
   full battery cost.
+- **Lifetime return** (optional). With a lifespan entered, the savings accumulated over it at
+  the price-rise rate, less the outlay, as £ and % — for the whole setup and for the battery
+  alone. A cycle life that runs out sooner at the run's cycling rate cuts the life short; it
+  never lengthens it (calendar ageing is the user's call).
 - Export choices are limited to the pairings Octopus permits (Smart Tariffs T&Cs: Flux is
   import+export only, §2.7.1; Go and Cosy pair only with Outgoing SEG, Outgoing Octopus or
   Agile Outgoing, §2.1.2/§2.6.2). Compare runs every permitted pairing that has a published

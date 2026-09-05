@@ -160,9 +160,29 @@ export function solveHorizon(soc0, imp, exp, loadF, cfg, mode, allowExport, pvF 
   const worth = (b) => refillCost && b.kind === 'load' && Number.isFinite(preMin[b.t])
     ? Math.min(b.val, preMin[b.t]) : b.val;
   const order1 = refillCost ? [...buckets].sort((a, b) => worth(b) - worth(a)) : buckets;
+  // refillCost leans on the refill to serve what pass 1 spends. That only holds while the
+  // refill has the room: a spend at value p is affordable only out of the SURPLUS
+  // E + R(p) - D(p) — energy in the pack, plus room at refill slots cheaper than p (pack-side,
+  // not counting slots pass 1 has already spent in), less the demand worth more than p that
+  // those refills must also serve. Spending IN a refill slot forfeits that slot's room too
+  // (one-meter: it cannot then charge). Unguarded, 2026-07-09 on Go sold the pack at 11.9p
+  // in the cheap window until too few slots were left to refill it, then imported at 31p.
+  const roomAt = (u) => (disRaw.get(u) || 0) > EPS ? 0
+    : surF[u] > EPS ? Math.min(surF[u], cfg.slotIn) * cfg.eff
+    : Number.isFinite(refill[u]) ? chargeInSlot(cfg, defF[u]) * cfg.eff : 0;
+  const surplusFor = (p) => {
+    let E = minOver(L, 0, T), R = 0, D = 0;
+    for (let u = 0; u < T; u++) if (refill[u] < p - MARGIN) R += roomAt(u);
+    for (const b of buckets) if (b.val > p + MARGIN) D += b.qty;
+    return E + R - D;
+  };
   for (const b of order1) {
     if (worth(b) <= floorAt(b.t) + MARGIN) continue;   // worth less than a refill: hold
-    const q = Math.min(b.qty, slotRem[b.t], minOver(L, b.t, T));
+    let q = Math.min(b.qty, slotRem[b.t], minOver(L, b.t, T));
+    if (refillCost && q > EPS) {
+      const lost = refill[b.t] < b.val - MARGIN ? roomAt(b.t) : 0;
+      q = Math.min(q, surplusFor(b.val) - lost);
+    }
     if (q > EPS) commit(b, q);
   }
 

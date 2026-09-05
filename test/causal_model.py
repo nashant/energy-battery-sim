@@ -364,10 +364,40 @@ def solve_horizon(soc0, imp, exp, load_f, cfg, mode, allow_export, pv_f=None):
         return b['val']
 
     order1 = sorted(buckets, key=lambda b: -worth(b)) if refill_cost else buckets
+
+    # refillCost leans on the refill to serve what pass 1 spends; that only holds while the
+    # refill has the room. A spend at value p is affordable only out of the surplus
+    # E + R(p) - D(p): pack energy, plus room at refill slots cheaper than p (pack-side, not
+    # counting slots pass 1 has spent in), less demand worth more than p. Spending IN a
+    # refill slot forfeits that slot's room too (one-meter).
+    def room_at(u):
+        if dis_raw.get(u, 0) > EPS:
+            return 0
+        if sur_f[u] > EPS:
+            return min(sur_f[u], cfg['slotIn']) * cfg['eff']
+        if math.isfinite(refill[u]):
+            return charge_in_slot(cfg, def_f[u]) * cfg['eff']
+        return 0
+
+    def surplus_for(p):
+        E = _min_over(L, 0, T)
+        R = 0
+        D = 0
+        for u in range(T):
+            if refill[u] < p - MARGIN:
+                R += room_at(u)
+        for b in buckets:
+            if b['val'] > p + MARGIN:
+                D += b['qty']
+        return E + R - D
+
     for b in order1:
         if worth(b) <= floor_at(b['t']) + MARGIN:
             continue
         q = min(b['qty'], slot_rem[b['t']], _min_over(L, b['t'], T))
+        if refill_cost and q > EPS:
+            lost = room_at(b['t']) if refill[b['t']] < b['val'] - MARGIN else 0
+            q = min(q, surplus_for(b['val']) - lost)
         if q > EPS:
             commit(b, q)
 

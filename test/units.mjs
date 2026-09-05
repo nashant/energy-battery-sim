@@ -287,6 +287,47 @@ const CFG = makeCfg({ capacity: 10, roundTrip: 1, dischargeFloorPct: 0,
   ok('contig window starts after pass-1 discharge', pc.window !== null && pc.window[0] === 3);
 }
 
+// refillCost energy balance. Go-shaped horizon: six cheap slots (8.63p in, 11.9p out), a day
+// at 31.38p with 21 kWh of load, an evening with 15 kWh of export room at 22p; 10 kWh in the
+// pack. Refill costs 8.63/0.9 + 2.03 wear = 11.61 pack-side, so a window export at 11.9p
+// clears the hold floor by 0.3p — but every kWh sold there leaves less for the day, and the
+// slot it sells in cannot also charge (one-meter), so it forfeits 4.5 kWh of refill room.
+// Demand the refill would serve (21 load + 15 export = 36) already exceeds pack + room
+// (10 + 27 = 37) by all but 1 kWh, so no window export is affordable: the day's load must
+// stay fully served by the plan, which the unguarded pass 1 broke on 2026-07-09.
+{
+  const cfgR = makeCfg({ capacity: 32, roundTrip: 0.9, dischargeFloorPct: 10, inverterKw: 10,
+                         totalImportLimitKw: null, maxChargePrice: null, exportLimitKw: 5,
+                         holdFor: 'laterCheaperRefill', packEnergyWorth: 'refillCost',
+                         batteryCost: 3500, cycleLife: 6000 });
+  const T = 32, imp = [], exp = [], ld = [];
+  for (let t = 0; t < T; t++) {
+    if (t < 6) { imp.push(8.63); exp.push(11.9); ld.push(0.3); }
+    else if (t < 26) { imp.push(31.38); exp.push(12); ld.push(0.9); }
+    else { imp.push(31.38); exp.push(22); ld.push(0.5); }
+  }
+  const p = solveHorizon(10, imp, exp, ld, cfgR, 'contiguous', true);
+  const dis = (t) => p.discharge.get(t) || { load: 0, export: 0 };
+  const windowExport = imp.reduce((a, _, t) => a + (t < 6 ? dis(t).export : 0), 0);
+  const dayLoad = ld.reduce((a, v, t) => a + (t >= 6 ? v : 0), 0);
+  const servedLoad = ld.reduce((a, _, t) => a + (t >= 6 ? dis(t).load : 0), 0);
+  ok('refillCost balance: no window export when refill room is spoken for', windowExport <= 1e-9);
+  // existing energy below the hold floor stays in the pack for load-following to draw, so
+  // what counts is delivered plus still-held, not delivered alone
+  ok('refillCost balance: the day\'s load is covered by plan discharge plus energy left in the pack',
+     servedLoad + p.plannedSoc[T - 1] >= dayLoad - 1e-9);
+  // the same window with nothing much to serve later: existing energy IS surplus, and the
+  // 0.3p spread is taken — the guard must not turn refillCost into "never export"
+  const T2 = 12, imp2 = [], exp2 = [], ld2 = [];
+  for (let t = 0; t < T2; t++) {
+    if (t < 6) { imp2.push(8.63); exp2.push(11.9); ld2.push(0.3); }
+    else { imp2.push(31.38); exp2.push(5); ld2.push(0.5); }
+  }
+  const p2 = solveHorizon(10, imp2, exp2, ld2, cfgR, 'contiguous', true);
+  const windowExport2 = imp2.reduce((a, _, t) => a + (t < 6 ? (p2.discharge.get(t)?.export || 0) : 0), 0);
+  ok('refillCost balance: surplus energy still exports in the window', close(windowExport2, 10));
+}
+
 import { roiPct } from '../js/data.js';
 
 // simple year-1 return: annual saving over capex, as %/yr — reciprocal of unescalated payback

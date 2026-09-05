@@ -18,7 +18,10 @@ def lcg(seed):
         yield s / 2147483647
 
 
-def synth(days, seed):
+def synth(days, seed, shape='agile'):
+    """shape 'agile': cheap overnight, 16-19 peak, export 0.6x import. shape 'go': Go's 8.63p
+    00:30-05:30 / 31.38p day against an Agile-Outgoing-like export (~11.9p, 16-19 ~22p), so
+    export beats import inside the cheap window."""
     rnd = lcg(seed)
     wall, lf, load, imp, exp = [], [], [], [], []
     t0 = 1736121600000  # 2025-01-06T00:00Z, a Monday
@@ -32,9 +35,15 @@ def synth(days, seed):
             we = _utc(ms).weekday() >= 5
             load.append(round((0.2 + (0.6 if 17 <= hh < 21 else 0)) * (1.25 if we else 1)
                               * (0.8 + 0.4 * next(rnd)), 6))
-            base = 12 if hh < 6 else 38 if 16 <= hh < 19 else 24
-            imp.append(round(base * (0.9 + 0.2 * next(rnd)), 4))
-            exp.append(round(base * 0.6 * (0.9 + 0.2 * next(rnd)), 4))
+            if shape == 'go':
+                imp.append(8.63 if 0.5 <= hh < 5.5 else 31.38)
+                next(rnd)
+                base_x = 22 if 16 <= hh < 19 else 11.9
+                exp.append(round(base_x * (0.95 + 0.1 * next(rnd)), 4))
+            else:
+                base = 12 if hh < 6 else 38 if 16 <= hh < 19 else 24
+                imp.append(round(base * (0.9 + 0.2 * next(rnd)), 4))
+                exp.append(round(base * 0.6 * (0.9 + 0.2 * next(rnd)), 4))
     return {'wall': wall, 'localFloat': lf}, load, imp, exp
 
 
@@ -90,6 +99,12 @@ CASES = [
     # branch (overflow off discharge before it clips PV) fires in ~70 slots
     ('scattered-pv-dc-big', dict(cycle='scattered', allowExport=True, exportLimitKw=None, maxChargePrice=None,
                                  inverterKw=1.2), 1.0, 'dc', 6.0),
+    # Go against an Agile-Outgoing-like export with refillCost + laterCheaperRefill and wear:
+    # export beats import inside the cheap window, so pass 1's surplus guard (spend only
+    # E + R - D, and a spend in a refill slot forfeits its room) is exercised every night
+    ('contig-go-refill',  dict(cycle='contiguous', allowExport=True,  exportLimitKw=5.0,  maxChargePrice=None,
+                               holdFor='laterCheaperRefill', packEnergyWorth='refillCost',
+                               batteryCost=3500.0, cycleLife=6000, capacity=32.0, inverterKw=10.0, _shape='go'), 1.0),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)
@@ -97,7 +112,9 @@ BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
 if __name__ == '__main__':
     out = []
     for name, extra, exp_mul, *pvc in CASES:
-        usage, load, imp, exp = synth(35, seed=42)
+        extra = dict(extra)
+        shape = extra.pop('_shape', 'agile')
+        usage, load, imp, exp = synth(35, seed=42, shape=shape)
         exp = [round(v * exp_mul, 4) for v in exp]
         params = {**BASE, **extra}
         pv = None

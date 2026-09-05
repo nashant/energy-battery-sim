@@ -89,7 +89,10 @@ Each defaults to the shipped behaviour; the same names are `params` fields for `
 - **packEnergyWorth** — how existing energy is valued when spent: `displacedPrice` (the
   import price it avoids; shipped) or `refillCost` (load that a later refill can serve is
   worth no more than that refill, so existing energy goes to export and to load before the
-  refill instead of to tomorrow's load).
+  refill instead of to tomorrow's load). Under `refillCost` a spend may only take the
+  energy surplus — pack energy plus room at cheaper refill slots, less the demand worth
+  more than the spend — and spending inside a refill slot forfeits that slot's room, so
+  the pack is never sold off in a cheap window that then has too few slots left to refill it.
 - **priceHorizon** — `published` (tomorrow's prices arrive at 16:00; shipped) or
   `knownSchedule48h` (plan 48 h ahead on the import schedule, with export beyond the
   published boundary taken from yesterday's same slot). Honest only for fixed time-of-use

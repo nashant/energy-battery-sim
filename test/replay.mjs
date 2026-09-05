@@ -215,6 +215,24 @@ for (const cycle of ['scattered', 'contiguous']) {
     ok('pv dc oversize: AC output stays within the inverter', rb.slots.every((s) =>
        s.pvGen - s.pvToBattery - s.pvSpill + s.disLoad + s.disExp <= P.inverterKw * 0.5 + 1e-6));
     ok('pv dc oversize: run stays clean', rb.socViolations === 0 && bothWays(rb));
+    // A small hybrid inverter (0.8 kW -> 0.4 kWh/half-hour) under the same oversize array,
+    // with the 0.8 kWh evening load above its rating while PV is still up: PV and
+    // discharge both want the inverter while the house still has a deficit. The overflow
+    // comes off discharge before it clips PV — the inverter's AC output is the same either
+    // way, so the house is served identically and the pack keeps the energy. (With a 5 kW
+    // inverter the load never exceeds its rating, so the branch cannot be reached above.)
+    const rs = runSim({ usage, load, imp, exp, scTotalP: 0,
+                        params: { ...P, cycle: 'contiguous', inverterKw: 0.8 },
+                        pv: { ac: z, dc: big, acF1: z, acF2: z, dcF1: big, dcF2: big } });
+    ok('pv dc small inverter: clips while the house still has a deficit',
+       rs.slots.some((s, i) => s.pvSpill > 1e-9 && s.pvToHouse < load[i] - 1e-9));
+    ok('pv dc small inverter: PV is clipped only once discharge to the house is exhausted',
+       rs.slots.every((s) => s.pvSpill <= 1e-9 || s.disLoad <= 1e-9));
+    ok('pv dc small inverter: every slot still balances', rs.slots.every((s, i) =>
+       Math.abs(s.pvToHouse + s.pvToBattery + s.pvExport + s.pvSpill - big[i]) < 1e-9));
+    ok('pv dc small inverter: AC output stays within the inverter', rs.slots.every((s) =>
+       s.pvGen - s.pvToBattery - s.pvSpill + s.disLoad + s.disExp <= 0.4 + 1e-6));
+    ok('pv dc small inverter: run stays clean', rs.socViolations === 0 && bothWays(rs));
   }
   // connection export cap: PV takes the cap before the battery does. Free PV that would
   // be spilled beats stored energy, which keeps its worth in the pack, so no slot may

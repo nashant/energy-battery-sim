@@ -654,13 +654,16 @@ def run_replay(usage, load, imp, exp, cfg, params, pv=None):
             if extra > 1e-12:
                 dl += extra
         # 6. DC coupling: PV that is not charging shares the inverter's AC output with
-        # discharge. The overflow comes off battery export FIRST — holding a kWh in the
-        # pack is worth >= 0 later, while clipped PV is gone for good — and only what is
-        # left clips the PV.
+        # discharge. The overflow comes off battery export FIRST, then off discharge to
+        # the house (same AC output, PV passes through in place of stored energy, the
+        # pack keeps it), and only when both are exhausted does the remainder clip the PV.
         over = max(0, dc_rest + dl + dx - cfg['slotOut'])
         trim = min(dx, over)
         dx -= trim
         over -= trim
+        back = min(dl, over)
+        dl -= back
+        over -= back
         dc_clip = over
         dc_rest -= dc_clip
         gross = ac_rest + dc_rest

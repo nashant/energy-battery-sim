@@ -84,6 +84,12 @@ CASES = [
                                packEnergyWorth='refillCost'), 1.0, 'ac'),
     ('scattered-pv-dc',   dict(cycle='scattered',  allowExport=True,  exportLimitKw=3.0,  maxChargePrice=None), 1.0, 'dc'),
     ('contig-pv-noexp',   dict(cycle='contiguous', allowExport=False, exportLimitKw=None, maxChargePrice=None), 1.0, 'ac'),
+    # a 1.2 kW hybrid inverter under a 6 kWp DC array: PV alone overflows it (peaks ~2.4
+    # kWh/half-hour vs 0.6) and the synthetic load tops 0.6 in ~35 daytime slots, so the
+    # clip lands while discharge to the house is still on the inverter — the give-back
+    # branch (overflow off discharge before it clips PV) fires in ~70 slots
+    ('scattered-pv-dc-big', dict(cycle='scattered', allowExport=True, exportLimitKw=None, maxChargePrice=None,
+                                 inverterKw=1.2), 1.0, 'dc', 6.0),
 ]
 BASE = dict(capacity=12.0, roundTrip=0.9, dischargeFloorPct=10, inverterKw=5.0,
             totalImportLimitKw=None, useBattery=True)
@@ -96,7 +102,7 @@ if __name__ == '__main__':
         params = {**BASE, **extra}
         pv = None
         if pvc:
-            a, f1, f2 = synth_pv(35, seed=7)
+            a, f1, f2 = synth_pv(35, seed=7, kwp=pvc[1] if len(pvc) > 1 else 4.0)
             z = [0.0] * len(a)
             pv = ({'ac': a, 'dc': z, 'acF1': f1, 'acF2': f2, 'dcF1': z, 'dcF2': z} if pvc[0] == 'ac'
                   else {'ac': z, 'dc': a, 'acF1': z, 'acF2': z, 'dcF1': f1, 'dcF2': f2})

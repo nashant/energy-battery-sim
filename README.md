@@ -72,7 +72,9 @@ the code uses ES modules.
   (day-1 for slots ≤ 24 h ahead, else day-2), corrected by today's actual-to-forecast ratio.
   PV serves the house first; surplus is stored when a later slot beats the export price,
   otherwise exported under the G100 cap or spilled. A surplus slot never imports. DC arrays
-  share the hybrid inverter's output with discharge.
+  share the hybrid inverter's output with discharge: an overflow comes off battery export,
+  then off discharge to the house (PV serves that load instead and the pack keeps the
+  energy), and only then clips PV.
 
 ### Planner options
 

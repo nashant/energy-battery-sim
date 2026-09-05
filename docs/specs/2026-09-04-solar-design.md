@@ -98,8 +98,10 @@ At slot i, with actual `L`, `ac`, `dc`:
 DC coupling: `dc` energy first charges the pack, bounded by the battery charge rate (the
 inverter's `slotIn` is used as that rate), or serves load/export through the inverter's AC
 output, which it **shares with discharge**: `dcOut + dl + dx ≤ slotOut`. Contention there
-comes off battery export first (a held kWh keeps its value; clipped PV is lost), and DC
-energy above both bounds is spilled (the hybrid inverter clips it). AC coupling: `ac` is
+comes off battery export first, then off discharge to the house (the inverter's AC output
+is the same either way, so the house is served identically while PV passes through in
+place of stored energy and the pack keeps it — a held kWh keeps its value; clipped PV is
+lost), and only DC energy above all three bounds is spilled (the hybrid inverter clips it). AC coupling: `ac` is
 independent of the battery inverter; PV → battery uses the inverter's charge path (bounded
 by `slotIn`) and total export `pvExport + dx ≤ exportCap` — the connection limit, which is
 unbounded when none is entered, while `dx ≤ exportSlot` remains the battery's own bound.

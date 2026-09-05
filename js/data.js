@@ -296,12 +296,16 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
       if (extra > 1e-12) dl += extra;
     }
     // 6. DC coupling: PV that is not charging shares the inverter's AC output with
-    // discharge. The overflow comes off battery export FIRST — holding a kWh in the pack
-    // is worth >= 0 later, while clipped PV is gone for good — and only what is left
-    // clips the PV.
+    // discharge. The overflow comes off battery export FIRST, then off discharge to the
+    // house — the inverter's AC output is the same either way, so the house is served
+    // identically, but PV passes through in place of stored energy and the pack keeps
+    // it (worth >= 0 later, while clipped PV is gone for good). Only when both are
+    // exhausted does the remainder clip the PV.
     let over = Math.max(0, dcRest + dl + dx - cfg.slotOut);
     const trim = Math.min(dx, over);
     dx -= trim; over -= trim;
+    const back = Math.min(dl, over);
+    dl -= back; over -= back;
     const dcClip = over;
     dcRest -= dcClip; gross = acRest + dcRest;
     def = Math.max(0, load[i] - gross); sur = Math.max(0, gross - load[i]);   // dl <= old def <= new def

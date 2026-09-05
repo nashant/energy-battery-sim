@@ -180,6 +180,11 @@ wireDrop('dropGas', 'fileGas', (text, name) => {
 
 // ------------------------------------------------------------------ solar
 const DIRS = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
+// A bearing off the eight compass points shows as "custom" (value ''); without that option a
+// re-render of the row (after a fetch, or on reload) fell back to the first option, N.
+const dirName = (bearing) => Object.keys(DIRS).find((d) => DIRS[d] === bearing) ?? '';
+const dirOptions = (bearing) => [`<option value="" ${dirName(bearing) === '' ? 'selected' : ''}>custom</option>`,
+  ...Object.keys(DIRS).map((d) => `<option value="${d}" ${DIRS[d] === bearing ? 'selected' : ''}>${d}</option>`)].join('');
 const newArray = () => ({ id: Math.random().toString(36).slice(2, 8), name: `Array ${state.solar.arrays.length + 1}`,
   bearing: 180, tilt: 35, kwp: 4, inverterKw: 3.68, lossPct: 14, coupling: 'ac', cost: 5000, enabled: true });
 // rows saved before the toggle existed have no `enabled`: they are in the run
@@ -198,8 +203,7 @@ function renderArrays() {
       <div class="row4">
         <div><label>Name</label><input data-k="name" type="text" value="${esc(a.name)}"></div>
         <div><label>Faces (°)</label><input data-k="bearing" type="number" min="0" max="359" value="${a.bearing}"></div>
-        <div><label>Direction</label><select data-dir>${Object.keys(DIRS).map((d) =>
-          `<option value="${d}" ${DIRS[d] === a.bearing ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
+        <div><label>Direction</label><select data-dir>${dirOptions(a.bearing)}</select></div>
         <div><label>Tilt (°)</label><input data-k="tilt" type="number" min="0" max="90" value="${a.tilt}"></div>
       </div>
       <div class="row4">
@@ -227,10 +231,13 @@ $('arrays').addEventListener('input', (e) => {
   const a = state.solar.arrays.find((x) => x.id === row.dataset.id);
   const k = e.target.dataset.k;
   if (k === 'enabled') { a.enabled = e.target.checked; renderArrays(); return; }
-  if (e.target.dataset.dir !== undefined) { a.bearing = DIRS[e.target.value]; row.querySelector('[data-k="bearing"]').value = a.bearing; }
+  if (e.target.dataset.dir !== undefined) {
+    if (e.target.value === '') return;                 // "custom": the typed bearing stands
+    a.bearing = DIRS[e.target.value]; row.querySelector('[data-k="bearing"]').value = a.bearing;
+  }
   else if (k === 'name' || k === 'coupling') a[k] = e.target.value;
   else if (k) a[k] = e.target.value === '' ? null : Number(e.target.value);
-  if (k === 'bearing') row.querySelector('[data-dir]').value = Object.keys(DIRS).find((d) => DIRS[d] === a.bearing) ?? '';
+  if (k === 'bearing') row.querySelector('[data-dir]').value = dirName(a.bearing);
   $('fetchPv').disabled = !(state.solar.lat && activeArrays().length);
 });
 $('arrays').addEventListener('click', (e) => {

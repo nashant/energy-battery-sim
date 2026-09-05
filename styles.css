@@ -156,4 +156,8 @@ main > *, .flow-wrap > * { min-width: 0; }
 
 .array { border:1px solid var(--line); border-radius:8px; padding:8px; margin:8px 0; }
 .array .row4 { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
-.array .rm { float:right; font-size:11px; }
+.array .hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; }
+.array .rm { font-size:11px; }
+.array .inc { font-size:12px; cursor:pointer; }
+.array .inc input { vertical-align:middle; margin:0 4px 0 0; }
+.array.off { opacity:.55; }

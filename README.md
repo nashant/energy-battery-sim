@@ -74,7 +74,8 @@ the code uses ES modules.
   otherwise exported under the G100 cap or spilled. A surplus slot never imports. DC arrays
   share the hybrid inverter's output with discharge: an overflow comes off battery export,
   then off discharge to the house (PV serves that load instead and the pack keeps the
-  energy), and only then clips PV.
+  energy), and only then clips PV. Each array has an **include in run** toggle, so it can
+  be left out of a run (its cost too) without deleting it; the setting is remembered.
 
 ### Planner options
 

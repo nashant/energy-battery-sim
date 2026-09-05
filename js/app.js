@@ -181,15 +181,20 @@ wireDrop('dropGas', 'fileGas', (text, name) => {
 // ------------------------------------------------------------------ solar
 const DIRS = { N: 0, NE: 45, E: 90, SE: 135, S: 180, SW: 225, W: 270, NW: 315 };
 const newArray = () => ({ id: Math.random().toString(36).slice(2, 8), name: `Array ${state.solar.arrays.length + 1}`,
-  bearing: 180, tilt: 35, kwp: 4, inverterKw: 3.68, lossPct: 14, coupling: 'ac', cost: 5000 });
+  bearing: 180, tilt: 35, kwp: 4, inverterKw: 3.68, lossPct: 14, coupling: 'ac', cost: 5000, enabled: true });
+// rows saved before the toggle existed have no `enabled`: they are in the run
+const activeArrays = () => state.solar.arrays.filter((a) => a.enabled !== false);
 const solarKey = () => JSON.stringify({ lat: state.solar.lat, lon: state.solar.lon,
-  arrays: state.solar.arrays.map((a) => [a.bearing, a.tilt, a.kwp, a.inverterKw, a.lossPct, a.coupling]) });
+  arrays: state.solar.arrays.map((a) => [a.enabled !== false, a.bearing, a.tilt, a.kwp, a.inverterKw, a.lossPct, a.coupling]) });
 
 function renderArrays() {
   const s = state.solar;
   $('arrays').innerHTML = s.arrays.map((a) => `
-    <div class="array" data-id="${a.id}">
-      <button type="button" class="rm" data-rm="${a.id}">remove</button>
+    <div class="array${a.enabled !== false ? '' : ' off'}" data-id="${a.id}">
+      <div class="hdr">
+        <label class="inc"><input type="checkbox" data-k="enabled" ${a.enabled !== false ? 'checked' : ''}> include in run</label>
+        <button type="button" class="rm" data-rm="${a.id}">remove</button>
+      </div>
       <div class="row4">
         <div><label>Name</label><input data-k="name" type="text" value="${esc(a.name)}"></div>
         <div><label>Faces (°)</label><input data-k="bearing" type="number" min="0" max="359" value="${a.bearing}"></div>
@@ -208,9 +213,10 @@ function renderArrays() {
         <option value="ac" ${a.coupling === 'ac' ? 'selected' : ''}>AC — own inverter, independent of the battery</option>
         <option value="dc" ${a.coupling === 'dc' ? 'selected' : ''}>DC — into the battery's hybrid inverter</option>
       </select>
-      <div class="note" data-status>${s.pv && s.pvKey === solarKey() ? pvStatusFor(a) : 'not fetched'}</div>
+      <div class="note" data-status>${a.enabled === false ? 'excluded from the run'
+        : s.pv && s.pvKey === solarKey() ? pvStatusFor(a) : 'not fetched'}</div>
     </div>`).join('');
-  $('fetchPv').disabled = !(s.lat && s.arrays.length);
+  $('fetchPv').disabled = !(s.lat && activeArrays().length);
 }
 function pvStatusFor(a) {
   const p = state.solar.pv?.perArray.find((x) => x.arr.id === a.id);
@@ -220,11 +226,12 @@ $('arrays').addEventListener('input', (e) => {
   const row = e.target.closest('.array'); if (!row) return;
   const a = state.solar.arrays.find((x) => x.id === row.dataset.id);
   const k = e.target.dataset.k;
+  if (k === 'enabled') { a.enabled = e.target.checked; renderArrays(); return; }
   if (e.target.dataset.dir !== undefined) { a.bearing = DIRS[e.target.value]; row.querySelector('[data-k="bearing"]').value = a.bearing; }
   else if (k === 'name' || k === 'coupling') a[k] = e.target.value;
   else if (k) a[k] = e.target.value === '' ? null : Number(e.target.value);
   if (k === 'bearing') row.querySelector('[data-dir]').value = Object.keys(DIRS).find((d) => DIRS[d] === a.bearing) ?? '';
-  $('fetchPv').disabled = !(state.solar.lat && state.solar.arrays.length);
+  $('fetchPv').disabled = !(state.solar.lat && activeArrays().length);
 });
 $('arrays').addEventListener('click', (e) => {
   const id = e.target.dataset.rm; if (!id) return;
@@ -240,16 +247,19 @@ $('locate').onclick = async () => {
   } catch (e) { $('siteNote').textContent = e.message; }
 };
 async function ensurePv() {
-  const s = state.solar;
-  if (!s.arrays.length) { s.pv = null; s.pvKey = null; return null; }
+  const s = state.solar, active = activeArrays();
+  // no arrays, or every array switched out of the run: no PV at all
+  if (!active.length) { s.pv = null; s.pvKey = null; return null; }
   // arrays with no located site would otherwise run as if there were no solar at all
   // while payback still charged for the panels. Run and Compare show the message.
   if (!s.lat) throw new Error('Solar arrays are configured but the postcode has not been located — press Locate first.');
   if (s.pv && s.pvKey === solarKey()) return s.pv.series;
-  const { series, perArray } = await buildPv(state.usage, s, s.arrays, fetch,
+  const { series, perArray } = await buildPv(state.usage, s, active, fetch,
     (m) => { $('pvNote').textContent = m; });
   s.pv = { series, perArray }; s.pvKey = solarKey();
-  $('pvNote').textContent = `${perArray.reduce((a, p) => a + p.kwh, 0).toFixed(0)} kWh/yr across ${perArray.length} array(s)`;
+  const excluded = s.arrays.length - active.length;
+  $('pvNote').textContent = `${perArray.reduce((a, p) => a + p.kwh, 0).toFixed(0)} kWh/yr across ${perArray.length} array(s)` +
+    (excluded ? `, ${excluded} excluded` : '');
   renderArrays();
   return series;
 }
@@ -336,7 +346,7 @@ function params() {
     hpCost: num('hpCost'),
     gasUnitRate: num('gasUnitRate'),
     gasScPerDay: num('gasScPerDay'),
-    solarCost: state.solar.arrays.reduce((a, x) => a + (x.cost || 0), 0),
+    solarCost: activeArrays().reduce((a, x) => a + (x.cost || 0), 0),
   };
 }
 

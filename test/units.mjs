@@ -509,4 +509,90 @@ import { PvForecaster } from '../js/causal.js';
   ok('pv: no slot both grid-charges and discharges (contiguous)', !both(p.chg));
 }
 
+// ---------------------------------------------------------------- opportunistic immersion
+import { immersionFromGas, dhwBaseline, cylinderKwh, parseUsage } from '../js/data.js';
+
+ok('cylinder 200 L 15->60 C is 10.5 kWh', close(cylinderKwh(200, 45), 200 * 4.186 * 45 / 3600));
+ok('cylinder clamps a negative dT to zero', cylinderKwh(200, -5) === 0);
+
+// One synthetic day: gas fires 05:00-05:30 (a 4 kWh cylinder reheat), and the immersion may
+// run 00:00-05:00. Prices are built per half-hour so the accept/reject boundary is exact.
+const day = (d, rows) => rows.map(([hh, kwh]) =>
+  `${kwh.toFixed(4)}, 0, 0, 2026-07-${d}T${hh}:00+01:00, 2026-07-${d}T${hh}:30+01:00`).join('\n');
+const HEAD = 'Consumption (kwh), Estimated Cost Inc. Tax (p), Standing Charge Inc. Tax (p), Start, End';
+const hhSlots = (d) => [...Array(48)].map((_, i) =>
+  `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`);
+
+// gas: 4 kWh at 05:00 on the 1st and the 2nd; electricity: a flat trickle every half-hour
+const gasText = [HEAD,
+  day('01', hhSlots().map((h) => [h, h === '05:00' ? 4 : 0])),
+  day('02', hhSlots().map((h) => [h, h === '05:00' ? 4 : 0]))].join('\n');
+const useText = [HEAD,
+  day('01', hhSlots().map((h) => [h, 0.1])),
+  day('02', hhSlots().map((h) => [h, 0.1]))].join('\n');
+const gasFx = parseGas(gasText), useFx = parseUsage(useText);
+const flat = (v) => useFx.utc.map(() => v);
+const OPTS = {
+  windowFrom: 0, windowTo: 600, runFrom: 0, runTo: 300, immersionKw: 3, boilerEff: 0.85,
+  gasUnitRateP: 6.238, headroomPct: 0, litres: 200, setpointC: 60, coldC: 15,
+  standingLossKwhPerDay: 0, dhwDailyGasKwh: 4,
+};
+const BE = 6.238 / 0.85;   // 7.339 p/kWh
+
+// below breakeven: the whole 3.4 kWh of heat moves, at 3 kW that is three half-hours
+const cheap = immersionFromGas(useFx, gasFx, flat(BE - 1), flat(0), null, OPTS);
+ok('cheap slots take the whole block', close(cheap.info.heatMoved, 2 * 4 * 0.85, 1e-9));
+ok('cheap run bills every moved kWh at the slot price',
+   close(cheap.info.elecCostP, 2 * 4 * 0.85 * (BE - 1), 1e-9));
+ok('gas saved is the heat moved back through the boiler',
+   close(cheap.info.gasSavedP / OPTS.gasUnitRateP, 2 * 4, 1e-9));
+ok('cheap run saves money', cheap.info.gasSavedP > cheap.info.elecCostP);
+ok('cheap run fires on both days', cheap.info.daysFired === 2 && cheap.info.daysTotal === 2);
+ok('draw lands only in the run window',
+   cheap.add.every((v, i) => v === 0 || Number(useFx.wall[i].slice(11, 13)) < 5));
+
+// at or above breakeven nothing moves — the swap can never lose money
+ok('nothing moves at breakeven', immersionFromGas(useFx, gasFx, flat(BE), flat(0), null, OPTS).info.heatMoved === 0);
+ok('nothing moves above breakeven', immersionFromGas(useFx, gasFx, flat(BE + 5), flat(0), null, OPTS).info.daysFired === 0);
+// Octopus Go's 8.625p night rate is above the 7.34p breakeven, so it never fires
+ok('Go night rate never clears breakeven',
+   immersionFromGas(useFx, gasFx, flat(8.625), flat(0), null, OPTS).info.heatMoved === 0);
+
+// headroom demands a margin: 20% off 7.34p is 5.87p, so a 6p slot no longer qualifies
+ok('headroom rejects a slot that bare breakeven would take',
+   immersionFromGas(useFx, gasFx, flat(6), flat(0), null, OPTS).info.heatMoved > 0
+   && immersionFromGas(useFx, gasFx, flat(6), flat(0), null, { ...OPTS, headroomPct: 20 }).info.heatMoved === 0);
+
+// only the cheapest slots are used, and only as many as the immersion can fill
+const mixed = useFx.wall.map((w) => (w.slice(11, 16) === '02:00' ? BE - 1 : BE + 5));
+const one = immersionFromGas(useFx, gasFx, mixed, flat(0), null, OPTS);
+ok('one cheap half-hour moves one half-hour of immersion', close(one.info.heatMoved, 2 * 1.5, 1e-9));
+
+// the cylinder caps a block bigger than the tank
+ok('cylinder capacity caps the daily block',
+   close(immersionFromGas(useFx, gasFx, flat(BE - 1), flat(0), null,
+     { ...OPTS, litres: 50, dhwDailyGasKwh: 40 }).info.heatMoved, 2 * cylinderKwh(50, 45), 1e-9));
+
+// PV surplus is priced at the export it forgoes, not the import rate: dear import, free export
+const pvSeries = { ac: useFx.utc.map(() => 5), dc: useFx.utc.map(() => 0) };
+ok('PV surplus is priced at the forgone export',
+   immersionFromGas(useFx, gasFx, flat(50), flat(0), pvSeries, OPTS).info.heatMoved > 0);
+ok('PV surplus worth more than the gas it saves is left alone',
+   immersionFromGas(useFx, gasFx, flat(50), flat(20), pvSeries, OPTS).info.heatMoved === 0);
+
+// heating early wastes standing loss, charged pro rata; the draw exceeds the heat delivered
+const early = immersionFromGas(useFx, gasFx, mixed, flat(0), null, { ...OPTS, standingLossKwhPerDay: 2 });
+ok('standing loss makes the draw exceed the heat delivered', early.info.elecKwh > early.info.heatMoved);
+ok('standing loss leaves the heat delivered unchanged', close(early.info.heatMoved, one.info.heatMoved, 1e-9));
+
+// a zero-firing day contributes nothing
+const idleGas = parseGas([HEAD, day('01', hhSlots().map((h) => [h, 0])),
+                          day('02', hhSlots().map((h) => [h, h === '05:00' ? 4 : 0]))].join('\n'));
+ok('a day the boiler never fired moves nothing',
+   close(immersionFromGas(useFx, idleGas, flat(BE - 1), flat(0), null, OPTS).info.heatMoved, 4 * 0.85, 1e-9));
+
+// baseline detection needs three full months; two short ones give nothing
+ok('dhwBaseline is null without a full month', dhwBaseline(gasFx, 0, 600) === null);
+
+
 process.exit(fail ? 1 : 0);

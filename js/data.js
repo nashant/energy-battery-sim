@@ -88,7 +88,7 @@ export function parseGas(text) {
   if (!st || (!kc && !mc)) {
     throw new Error(`Gas CSV needs a Start column and a kWh or m³ column. Found: ${keys.join(', ')}`);
   }
-  const out = { utc: [], kwh: [], actualP: [], scP: [], unit: kc ? 'kWh' : 'm³' };
+  const out = { utc: [], wall: [], kwh: [], actualP: [], scP: [], unit: kc ? 'kWh' : 'm³' };
   for (const r of rows) {
     const utc = Date.parse(r[st]);
     if (Number.isNaN(utc)) continue;
@@ -97,6 +97,7 @@ export function parseGas(text) {
     if (Number.isNaN(k) && mc && r[mc] !== '') k = parseFloat(r[mc]) * M3_TO_KWH;
     if (Number.isNaN(k)) continue;
     out.utc.push(utc);
+    out.wall.push(r[st].slice(0, 16).replace('T', ' '));
     out.kwh.push(k);
     out.actualP.push(cc ? (parseFloat(r[cc]) || 0) : 0);
     out.scP.push(sc ? (parseFloat(r[sc]) || 0) : 0);
@@ -175,6 +176,125 @@ export function heatPumpSynthetic(usage, annualKwh) {
     return annualKwh * share;
   });
   return { add, info: { hpKwh: add.reduce((a, b) => a + b, 0) } };
+}
+
+// Energy to raise `litres` of water by dT degrees: 4.186 kJ/kg.K / 3600 s -> kWh.
+export const cylinderKwh = (litres, dT) => litres * 4.186 * Math.max(0, dT) / 3600;
+
+const minsOf = (wall) => Number(wall.slice(11, 13)) * 60 + Number(wall.slice(14, 16));
+const inWindow = (m, from, to) => (from <= to ? m >= from && m < to : m >= from || m < to);
+const addDay = (d) => new Date(Date.parse(d + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10);
+
+// The cylinder reheat hiding inside a metered gas block. Outside summer the same morning
+// window also carries space heating, so the raw block overstates hot water badly; the DHW
+// component is the block's daily mean over the three lowest-consumption calendar months,
+// when (as the user's own data shows) the boiler is doing nothing else. Zero-firing days
+// count -- they are real days the timer did not run.
+export function dhwBaseline(gas, windowFrom, windowTo) {
+  const month = new Map();                                // YYYY-MM -> running totals
+  for (let g = 0; g < gas.utc.length; g++) {
+    const w = gas.wall[g];
+    let m = month.get(w.slice(0, 7));
+    if (!m) month.set(w.slice(0, 7), m = { days: new Set(), total: 0, block: 0 });
+    m.days.add(w.slice(0, 10));
+    m.total += gas.kwh[g];
+    if (inWindow(minsOf(w), windowFrom, windowTo)) m.block += gas.kwh[g];
+  }
+  const perDay = (m) => m.total / m.days.size;
+  const quiet = [...month]
+    .filter(([, m]) => m.days.size >= 20)                 // ignore part-months at the edges
+    .sort((a, b) => perDay(a[1]) - perDay(b[1]))
+    .slice(0, 3);
+  if (!quiet.length) return null;
+  const days = quiet.reduce((a, [, m]) => a + m.days.size, 0);
+  return {
+    gasKwhPerDay: quiet.reduce((a, [, m]) => a + m.block, 0) / days,
+    months: quiet.map(([k]) => k),
+  };
+}
+
+// Opportunistic immersion: displace a metered gas block -- the timed cylinder reheat --
+// with an electric immersion, but ONLY in the half-hours whose marginal price beats the
+// gas-equivalent cost of the same heat (gas unit rate / boiler efficiency). Whatever the
+// cheap slots cannot cover stays on gas, so the swap cannot lose money by construction:
+// that conditionality is the whole feature, since running unconditionally costs more than
+// gas on every tariff currently published.
+//
+// A slot already covered by PV surplus is priced at the export revenue it forgoes rather
+// than at the import rate -- the same opportunity-cost substitution solveHorizon makes when
+// costing a battery refill. Heating earlier than the draw wastes part of a day's cylinder
+// standing loss, charged pro rata to how much of the cylinder was heated how early, so a
+// midday slot serving tomorrow morning has to be genuinely cheaper to be worth taking.
+export function immersionFromGas(usage, gas, imp, exp, pv, o) {
+  const breakevenP = (o.gasUnitRateP / o.boilerEff) * (1 - (o.headroomPct || 0) / 100);
+  const capKwh = cylinderKwh(o.litres, o.setpointC - o.coldC);
+  const perSlot = o.immersionKw * 0.5;
+
+  // Heat the boiler currently makes inside the block, per local day -- but only up to the
+  // hot-water share of it, since outside summer that window is mostly space heating. With
+  // too little data to find the share, the cylinder's own capacity is the only cap left,
+  // which over-claims; `dhwGasPerDay: null` in the result is how the caller can tell.
+  const dhw = o.dhwDailyGasKwh != null
+    ? { gasKwhPerDay: o.dhwDailyGasKwh, months: null }
+    : dhwBaseline(gas, o.windowFrom, o.windowTo);
+  const dailyCap = dhw ? Math.min(capKwh, dhw.gasKwhPerDay * o.boilerEff) : capKwh;
+  const need = new Map();
+  for (let g = 0; g < gas.utc.length; g++) {
+    if (!inWindow(minsOf(gas.wall[g]), o.windowFrom, o.windowTo)) continue;
+    const d = gas.wall[g].slice(0, 10);
+    need.set(d, Math.min(dailyCap, (need.get(d) || 0) + gas.kwh[g] * o.boilerEff));
+  }
+
+  // candidate half-hours, grouped by the day whose block each one would serve
+  const cand = new Map();
+  for (let i = 0; i < usage.wall.length; i++) {
+    const m = minsOf(usage.wall[i]);
+    if (!inWindow(m, o.runFrom, o.runTo)) continue;
+    // hours between running and wanting the water; past the deadline it serves tomorrow
+    let early = (o.windowTo - m) / 60;
+    let day = usage.wall[i].slice(0, 10);
+    if (early < 0) { early += 24; day = addDay(day); }
+    // standing loss wasted by heating `early` hours ahead, as a multiplier on the draw
+    const lossMult = capKwh > 0 ? 1 + (o.standingLossKwhPerDay || 0) * early / (24 * capKwh) : 1;
+    // surplus against the metered house load; any heat-pump load added on top is ignored,
+    // which prices a slot slightly too cheaply rather than too dear
+    const sur = pv ? Math.max(0, pv.ac[i] + pv.dc[i] - usage.kwh[i]) : 0;
+    const unitP = (Math.min(perSlot, sur) * exp[i] + Math.max(0, perSlot - sur) * imp[i]) / perSlot;
+    if (!cand.has(day)) cand.set(day, []);
+    cand.get(day).push({ i, lossMult, effP: unitP * lossMult });
+  }
+
+  const add = new Array(usage.wall.length).fill(0);
+  let heatNeeded = 0, heatMoved = 0, elecKwh = 0, elecCostP = 0, daysFired = 0;
+  for (const [day, want] of need) {
+    heatNeeded += want;
+    const slots = (cand.get(day) || []).sort((a, b) => a.effP - b.effP);
+    let left = want, fired = false;
+    for (const s of slots) {
+      if (left <= 1e-9 || s.effP >= breakevenP) break;   // sorted, so nothing later is cheaper
+      const heat = Math.min(left, perSlot);
+      const draw = heat * s.lossMult;
+      add[s.i] += draw;
+      elecKwh += draw;
+      elecCostP += heat * s.effP;
+      heatMoved += heat;
+      left -= heat;
+      fired = true;
+    }
+    if (fired) daysFired++;
+  }
+
+  const halfHourly = new Set(gas.wall.map((w) => w.slice(0, 10))).size * 1.5 < gas.wall.length;
+  return {
+    add,
+    info: {
+      heatNeeded, heatMoved, elecKwh, elecCostP,
+      gasSavedP: heatMoved / o.boilerEff * o.gasUnitRateP,
+      breakevenP, capKwh, halfHourly, dailyCap,
+      dhwGasPerDay: dhw ? dhw.gasKwhPerDay : null, dhwMonths: dhw ? dhw.months : null,
+      daysFired, daysTotal: need.size,
+    },
+  };
 }
 
 export function dayKeys(usage, boundary) {

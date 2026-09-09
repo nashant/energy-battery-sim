@@ -1,6 +1,6 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
          cacheGet, cachePut } from './tariffs.js';
-import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, lifetimeReturn, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
+import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, immersionFromGas, runSim, currentTariffTotal, paybackYears, roiPct, lifetimeReturn, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 import { lookupPostcode, buildPv } from './solar.js';
 
@@ -9,6 +9,12 @@ const gbp = (n) => (n < 0 ? '−' : '') + '£' + Math.abs(n).toLocaleString('en-
 // filenames are the one attacker-influenceable string that reaches innerHTML
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// £ the immersion saved over the CSV window, and the line explaining when it ran: the
+// results card and the tariff-comparison column both report exactly these.
+const immNet = (i) => (i.gasSavedP - i.elecCostP) / 100;
+const immFires = (i) =>
+  `fires below ${i.breakevenP.toFixed(2)} p/kWh on ${i.daysFired} of ${i.daysTotal} days`;
 
 const status = (html) => { $('status').innerHTML = html; };
 const showError = (m) => { $('errBox').innerHTML = `<div class="err">${m}</div>`; };
@@ -83,12 +89,20 @@ for (const id of ['region', 'importTariff', 'exportTariff', 'capacity', 'inverte
 }
 syncControls();
 
-$('hpMode').onchange = () => {
-  const m = $('hpMode').value;
+const syncHeatUi = () => {
+  const m = $('hpMode').value, dhw = $('dhwMode').value;
   $('hpSynthWrap').classList.toggle('hide', m !== 'synthetic');
-  $('hpGasWrap').classList.toggle('hide', m !== 'gas');
   $('hpCostWrap').classList.toggle('hide', m === 'none');
+  $('hpGasWrap').classList.toggle('hide', m !== 'gas');
+  $('dhwWrap').classList.toggle('hide', dhw !== 'gas');
+  // the gas unit rate and boiler efficiency are meter facts, not heat-pump settings
+  $('gasMeterWrap').classList.toggle('hide', !state.gas && m !== 'gas' && dhw !== 'gas');
+  // heat-pump-from-gas already converts the hot water too, so the two cannot both apply;
+  // saying so in the panel reaches Compare, which renders no warnings
+  $('dhwInertNote').classList.toggle('hide', !(dhw === 'gas' && m === 'gas'));
 };
+$('hpMode').onchange = syncHeatUi;
+$('dhwMode').onchange = syncHeatUi;
 
 // ------------------------------------------------------------------ file input
 
@@ -158,7 +172,7 @@ function loadGas(text, name, fromCache = false) {
         (imp.scPerDayP !== null ? ` + ${imp.scPerDayP.toFixed(2)} p/day` : '')
       : '');
   $('hpMode').value = 'gas';
-  $('hpMode').dispatchEvent(new Event('change'));
+  syncHeatUi();
   // surface the implied prices as editable values; never clobber a manual entry
   if (imp.unitRateP !== null && $('gasUnitRate').value.trim() === '') {
     $('gasUnitRate').value = imp.unitRateP.toFixed(2);
@@ -300,7 +314,7 @@ async function restoreControls() {
   // re-sync the dependent UI without the import handler, which would reset the export
   syncTariffUi(); syncPredictExport(); syncControls();
   $('curSource').dispatchEvent(new Event('change'));
-  $('hpMode').dispatchEvent(new Event('change'));
+  syncHeatUi();
 }
 
 // restore a previously dropped CSV so returning visitors skip the upload
@@ -320,6 +334,7 @@ async function restoreControls() {
 
 function params() {
   const num = (id) => { const v = $(id).value.trim(); return v === '' ? null : Number(v); };
+  const hhmm = (id) => { const [h, m] = $(id).value.split(':'); return Number(h) * 60 + Number(m); };
   return {
     region: $('region').value,
     importKey: $('importTariff').value,
@@ -354,6 +369,17 @@ function params() {
     hpCost: num('hpCost'),
     gasUnitRate: num('gasUnitRate'),
     gasScPerDay: num('gasScPerDay'),
+    dhwMode: $('dhwMode').value,
+    dhwBlockFrom: hhmm('dhwBlockFrom'), dhwBlockTo: hhmm('dhwBlockTo'),
+    dhwRunFrom: hhmm('dhwRunFrom'), dhwRunTo: hhmm('dhwRunTo'),
+    immersionKw: Number($('immersionKw').value),
+    cylinderLitres: Number($('cylinderLitres').value),
+    dhwSetpoint: Number($('dhwSetpoint').value),
+    dhwCold: Number($('dhwCold').value),
+    dhwStandingLoss: Number($('dhwStandingLoss').value),
+    dhwHeadroom: Number($('dhwHeadroom').value),
+    dhwGasPerDay: num('dhwGasPerDay'),
+    immersionCost: num('immersionCost'),
     solarCost: activeArrays().reduce((a, x) => a + (x.cost || 0), 0),
   };
 }
@@ -375,6 +401,38 @@ function buildLoad(p) {
   return { load: add ? base.map((v, i) => v + add[i]) : base.slice(), add, info };
 }
 
+// Unlike the heat pump, whether the immersion runs at all depends on the price in each slot,
+// so it can only be decided once the tariff is known -- hence a builder of its own, returning
+// the same { add, info } as the heat-pump pair rather than folding itself into a load array.
+function immersionLoad(p, prices, pv) {
+  // heat-pump-from-gas already converts every gas kWh to electricity, hot water included
+  if (p.dhwMode !== 'gas' || p.hpMode === 'gas') return { add: null, info: null };
+  if (!state.gas) throw new Error('Hot water is set to displace gas but no gas CSV is loaded.');
+  const rate = p.gasUnitRate ?? gasImpliedRates(state.gas).unitRateP;
+  if (!(rate > 0)) {
+    throw new Error('Hot water needs a gas unit rate — set one under Your gas boiler, ' +
+                    'or load a gas CSV that has cost columns.');
+  }
+  return immersionFromGas(state.usage, state.gas, prices.imp, prices.exp, pv, {
+    windowFrom: p.dhwBlockFrom, windowTo: p.dhwBlockTo,
+    runFrom: p.dhwRunFrom, runTo: p.dhwRunTo,
+    immersionKw: p.immersionKw, boilerEff: p.boilerEff, gasUnitRateP: rate,
+    headroomPct: p.dhwHeadroom, litres: p.cylinderLitres,
+    setpointC: p.dhwSetpoint, coldC: p.dhwCold,
+    standingLossKwhPerDay: p.dhwStandingLoss,
+    dhwDailyGasKwh: p.dhwGasPerDay,
+  });
+}
+
+// The load a scenario is scored on: metered usage, plus the heat pump, plus the immersion.
+// Every path that prices a tariff goes through here, so all three see the same load.
+function scenarioLoad(p, prices, pv) {
+  const { load, add: hpAdd, info: hpInfo } = buildLoad(p);
+  const { add: immAdd, info: immInfo } = immersionLoad(p, prices, pv);
+  if (immAdd) for (let i = 0; i < load.length; i++) load[i] += immAdd[i];
+  return { load, hpAdd, hpInfo, immInfo };
+}
+
 // ------------------------------------------------------------------ run
 
 $('run').onclick = async () => {
@@ -384,13 +442,13 @@ $('run').onclick = async () => {
   $('run').disabled = true;
   try {
     status('<span class="spinner"></span> fetching rates…');
-    const { load, add, info } = buildLoad(p);
     const pv = await ensurePv();
     const prices = await buildPrices({
       importKey: p.importKey, exportKey: p.exportKey, region: p.region,
       instants: state.usage.utc, flatExport: p.flatExport,
       onProgress: (m) => status(`<span class="spinner"></span> ${m}`),
     });
+    const { load, hpAdd, hpInfo, immInfo } = scenarioLoad(p, prices, pv);
     status('<span class="spinner"></span> optimising 365 days…');
     await new Promise((r) => setTimeout(r, 0));
 
@@ -398,9 +456,9 @@ $('run').onclick = async () => {
                              scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: true } });
     const noBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp,
                            scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: false } });
-    const cur = currentTariffTotal(state.usage, add, curOverride(p));
+    const cur = currentTariffTotal(state.usage, hpAdd, curOverride(p));
 
-    state.run = { p, prices, withBat, noBat, cur, hpInfo: info };
+    state.run = { p, prices, withBat, noBat, cur, hpInfo, immInfo };
     render();
     status('done');
   } catch (e) {
@@ -418,9 +476,8 @@ $('compare').onclick = async () => {
   $('compare').disabled = true;
   const rows = [];
   try {
-    const { load, add } = buildLoad(p);
     const pv = await ensurePv();
-    const cur = currentTariffTotal(state.usage, add, curOverride(p));
+    const cur = currentTariffTotal(state.usage, buildLoad(p).add, curOverride(p));
     const combos = [];
     // every permitted pairing that has a published product (custom flat rates are UI-only)
     for (const [ik, iv] of Object.entries(IMPORT_TARIFFS)) {
@@ -434,13 +491,14 @@ $('compare').onclick = async () => {
         onProgress: (m) => status(`<span class="spinner"></span> ${m}`),
       });
       await new Promise((r) => setTimeout(r, 0));
+      const { load, immInfo } = scenarioLoad(p, pr, pv);
       const wb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
                           scTotalP: pr.scTotalP, pv,
                           params: { ...p, allowExport: c.ek !== 'none', useBattery: true } });
       const nb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
                           scTotalP: pr.scTotalP, pv,
                           params: { ...p, allowExport: c.ek !== 'none', useBattery: false } });
-      rows.push({ ...c, wb, nb, note: IMPORT_TARIFFS[c.ik].note });
+      rows.push({ ...c, wb, nb, immInfo, note: IMPORT_TARIFFS[c.ik].note });
     }
     renderCompare(rows, cur, systemCost(p), p);
     status('done');
@@ -457,9 +515,10 @@ $('runSweeps').onclick = async () => {
   const { p, prices, withBat, cur } = state.run;
   $('runSweeps').disabled = true;
   try {
-    const { load } = buildLoad(p);
+    const pv = state.solar.pv?.series ?? null;
+    const { load } = scenarioLoad(p, prices, pv);
     const base = { usage: state.usage, load, imp: prices.imp, exp: prices.exp,
-                   scTotalP: prices.scTotalP, pv: state.solar.pv?.series ?? null };
+                   scTotalP: prices.scTotalP, pv };
     const annual = 365 / withBat.nDays;
     const one = async (key, v, unit) => {
       status(`<span class="spinner"></span> sweep: ${v} ${unit}…`);
@@ -522,7 +581,7 @@ $('clearCache').onclick = async () => {
 // ------------------------------------------------------------------ render
 
 function render() {
-  const { p, prices, withBat, noBat, cur, hpInfo } = state.run;
+  const { p, prices, withBat, noBat, cur, hpInfo, immInfo } = state.run;
   $('intro').classList.add('hide');
   $('results').classList.remove('hide');
   $('sensSection').classList.remove('hide');
@@ -554,9 +613,12 @@ function render() {
   const gasRate = p.gasUnitRate ?? gasImp.unitRateP;
   const gasBill = p.hpMode === 'gas'
     ? gasBillPounds(hpInfo, gasRate, p.gasScPerDay ?? gasImp.scPerDayP, withBat.nDays) : 0;
-  const invest = cost + hpCost;
-  const pbSave = (hpCost > 0 || gasBill > 0
-    ? currentTariffTotal(state.usage, null, curOverride(p)).total + gasBill - withBat.total
+  // the immersion removes only part of the gas bill; withBat.total already carries its draw
+  const immGas = immInfo ? immInfo.gasSavedP / 100 : 0;   // gas removed, not the net saving
+  const immCost = immInfo ? (p.immersionCost || 0) : 0;
+  const invest = cost + hpCost + immCost;
+  const pbSave = (hpCost > 0 || gasBill > 0 || immGas > 0
+    ? currentTariffTotal(state.usage, null, curOverride(p)).total + gasBill + immGas - withBat.total
     : save) * annual;
   const pbBatt = paybackYears(battCost, withBat.savedVsNoBattery * annual, p.escPct);
   const pbCur = paybackYears(invest, pbSave, p.escPct);
@@ -571,10 +633,11 @@ function render() {
   const ltBatt = life ? lifetimeReturn(battCost, withBat.savedVsNoBattery * annual, life.years, p.escPct) : null;
   const fmtNet = (lt) => `${lt.net >= 0 ? '+' : ''}${gbp(lt.net)} · ${lt.pct.toFixed(0)}%`;
   // Investment breakdown; with neither solar nor a heat pump the single total reads better.
-  const costParts = solarCost > 0 || hpCost > 0 ? [
+  const costParts = solarCost > 0 || hpCost > 0 || immCost > 0 ? [
     `${gbp(battCost)} battery`,
     ...(solarCost > 0 ? [`${gbp(solarCost)} solar`] : []),
     ...(hpCost > 0 ? [`${gbp(hpCost)} heat pump`] : []),
+    ...(immCost > 0 ? [`${gbp(immCost)} immersion control`] : []),
   ] : [];
   $('cards').innerHTML = `
     ${card('Current tariff', gbp(cur.total), cur.source === 'manual'
@@ -588,6 +651,13 @@ function render() {
       `${(100 * withBat.pvToBattery / withBat.pvKwh).toFixed(0)}% stored · ` +
       `${(100 * withBat.pvExport / withBat.pvKwh).toFixed(0)}% exported · ` +
       `${(100 * withBat.pvSpill / withBat.pvKwh).toFixed(0)}% spilled`) : ''}
+    ${immInfo ? card('Hot water', `${gbp(immNet(immInfo) * annual)}/yr`, [
+      immFires(immInfo),
+      `${immInfo.heatMoved.toFixed(0)} of ${immInfo.heatNeeded.toFixed(0)} kWh heat moved off gas ` +
+        `· ${immInfo.elecKwh.toFixed(0)} kWh electric for ${gbp(immInfo.elecCostP / 100)}`,
+      `hot water taken as ${immInfo.dhwGasPerDay?.toFixed(1) ?? '?'} kWh gas/day in that window` +
+        (immInfo.dhwMonths ? ` (from ${immInfo.dhwMonths.join(', ')})` : ''),
+    ].join('<br>'), immNet(immInfo) >= 0 ? 'pos' : 'neg') : ''}
     ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery` +
            (withBat.wearP > 0 ? `<br>${gbp(save - withBat.wear)} net of battery wear` : ''),
            save >= 0 ? 'pos' : 'neg')}
@@ -610,6 +680,19 @@ function render() {
 
   const w = [...prices.warnings];
   if (withBat.socViolations) w.push(`${withBat.socViolations} state-of-charge bound violations — please report this.`);
+  if (immInfo && !immInfo.halfHourly) {
+    w.push('Your gas CSV is coarser than half-hourly, so the block split cannot see the ' +
+           'cylinder reheat — the hot water figure is not meaningful.');
+  }
+  if (immInfo && immInfo.dhwGasPerDay === null) {
+    w.push('Your gas CSV has no full month, so the hot-water share of the block could not be ' +
+           `found — the immersion was capped only by the ${immInfo.capKwh.toFixed(1)} kWh cylinder, ` +
+           'which overstates the saving. Set "Hot water gas" on the Hot water panel to fix it.');
+  }
+  if (immInfo && immInfo.daysFired === 0) {
+    w.push(`The immersion never fired: no half-hour in the run window came in below ` +
+           `${immInfo.breakevenP.toFixed(2)} p/kWh, so the cylinder stays entirely on gas.`);
+  }
   if (p.hpMode === 'gas' && hpInfo?.unmatchedKwh > 0.5) {
     w.push(`${hpInfo.unmatchedKwh.toFixed(0)} kWh of gas fell outside the electricity date range and was ignored.`);
   }
@@ -674,22 +757,28 @@ function renderCompare(rows, cur, cost = 0, p = {}) {
   $('comparePanel').classList.remove('hide');
   rows.sort((a, b) => a.wb.total - b.wb.total);
   const best = rows[0];
+  // the immersion only fires where a tariff goes below the gas-equivalent price, which is
+  // precisely what differs across these rows -- so it earns its own column
+  const dhw = rows.some((r) => r.immInfo);
   $('compareTable').innerHTML =
     `<thead><tr><th>Import</th><th>Export</th><th>No battery</th><th>With battery</th>
-      <th>Saves vs current</th><th>Battery adds</th><th>Payback</th><th>Lifetime return</th><th>kWh cycled</th></tr></thead><tbody>` +
+      <th>Saves vs current</th><th>Battery adds</th>${dhw ? '<th>Hot water</th>' : ''}<th>Payback</th><th>Lifetime return</th><th>kWh cycled</th></tr></thead><tbody>` +
     rows.map((r) => `<tr class="${r === best ? 'best' : ''}">
       <td title="${r.note.replace(/"/g, '&quot;')}">${IMPORT_TARIFFS[r.ik].name}</td>
       <td>${r.ek === 'none' ? '—' : EXPORT_TARIFFS[r.ek].name}</td>
       <td>${gbp(r.nb.total)}</td><td><b>${gbp(r.wb.total)}</b></td>
       <td class="${cur.total - r.wb.total >= 0 ? 'pos' : 'neg'}">${gbp(cur.total - r.wb.total)}</td>
       <td>${gbp(r.wb.savedVsNoBattery)}</td>
+      ${dhw ? (r.immInfo
+        ? `<td class="${immNet(r.immInfo) >= 0 ? 'pos' : 'neg'}" title="${immFires(r.immInfo)}">${gbp(immNet(r.immInfo))}</td>`
+        : '<td>—</td>') : ''}
       <td>${fmtYears(paybackYears(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, escPct))}</td>
       ${(() => { const life = lifeSpan(p, r.wb, 365 / r.wb.nDays);
                  const lt = life ? lifetimeReturn(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, life.years, escPct) : null;
                  return lt ? `<td class="${lt.net >= 0 ? 'pos' : 'neg'}" title="over ${life.years.toFixed(1)} yrs (${life.src})">${lt.net >= 0 ? '+' : ''}${gbp(lt.net)}</td>` : '<td>—</td>'; })()}
       <td>${r.wb.cycled.toFixed(0)}</td></tr>`).join('') +
     `</tbody><tfoot><tr><td>Current tariff</td><td>—</td><td>${gbp(cur.total)}</td>
-      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tfoot>`;
+      <td>—</td><td>—</td><td>—</td>${dhw ? '<td>—</td>' : ''}<td>—</td><td>—</td><td>—</td></tr></tfoot>`;
 }
 
 function renderMonths() {

@@ -23,9 +23,17 @@
       <h2>1 · Your data</h2>
       <div id="dropUsage" class="drop">Drop <b>usage CSV</b> here, or click<div class="note">Octopus half-hourly electricity export</div></div>
       <div id="usageInfo" class="note"></div>
-      <label class="mt14">Optional: gas CSV (to model a heat pump from real heating demand)</label>
+      <label class="mt14">Optional: gas CSV (to model a heat pump, or an immersion for hot water)</label>
       <div id="dropGas" class="drop">Drop <b>gas CSV</b> here, or click</div>
       <div id="gasInfo" class="note"></div>
+      <div id="gasMeterWrap" class="hide">
+        <div class="row">
+          <div><label>Gas unit rate (p/kWh)</label><input type="number" id="gasUnitRate" placeholder="from the CSV" step="0.01"></div>
+          <div><label>Boiler efficiency</label><input type="number" id="boilerEff" value="0.85" step="0.01"></div>
+        </div>
+        <div class="note">What a kWh of gas costs and how much of it reaches the water. Both the
+          heat pump and the hot water panel price against these.</div>
+      </div>
       <input type="file" id="fileUsage" class="hide">
       <input type="file" id="fileGas" class="hide">
     </div>
@@ -158,14 +166,11 @@
       </div>
       <div id="hpGasWrap" class="hide">
         <div class="row">
-          <div><label>Boiler efficiency</label><input type="number" id="boilerEff" value="0.85" step="0.01"></div>
           <div><label>Heat pump COP</label><input type="number" id="cop" value="3.0" step="0.1"></div>
-        </div>
-        <div class="row">
-          <div><label>Gas unit rate (p/kWh)</label><input type="number" id="gasUnitRate" placeholder="for the gas bill credit" step="0.01"></div>
           <div><label>Gas standing charge (p/day)</label><input type="number" id="gasScPerDay" placeholder="0" step="0.01"></div>
         </div>
-        <div class="note">Gas kWh → useful heat (× efficiency) → electricity (÷ COP).</div>
+        <div class="note">Gas kWh → useful heat (× boiler efficiency) → electricity (÷ COP). The
+          standing charge counts here because a heat pump takes the whole gas meter away.</div>
       </div>
     </div>
 
@@ -183,6 +188,50 @@
         <button id="fetchPv" class="w100" disabled>Fetch irradiance</button>
       </div>
       <div id="pvNote" class="note"></div>
+    </div>
+
+    <div class="panel">
+      <h2>8 · Hot water</h2>
+      <label>Immersion</label>
+      <select id="dhwMode">
+        <option value="none">None — the cylinder stays on gas</option>
+        <option value="gas">Displace part of the gas reheat, when power is cheap</option>
+      </select>
+      <div id="dhwWrap" class="hide">
+        <div class="row">
+          <div><label>Gas block to displace, from</label><input type="time" id="dhwBlockFrom" value="00:00"></div>
+          <div><label>to</label><input type="time" id="dhwBlockTo" value="10:00"></div>
+        </div>
+        <div class="row">
+          <div><label>Immersion may run, from</label><input type="time" id="dhwRunFrom" value="00:00"></div>
+          <div><label>to</label><input type="time" id="dhwRunTo" value="05:00"></div>
+        </div>
+        <div class="row">
+          <div><label>Immersion (kW)</label><input type="number" id="immersionKw" value="3" step="0.5"></div>
+          <div><label>Cylinder (litres)</label><input type="number" id="cylinderLitres" value="200" step="10"></div>
+        </div>
+        <div class="row">
+          <div><label>Setpoint (°C)</label><input type="number" id="dhwSetpoint" value="60" step="1"></div>
+          <div><label>Cold feed (°C)</label><input type="number" id="dhwCold" value="15" step="1"></div>
+        </div>
+        <div class="row">
+          <div><label>Cylinder standing loss (kWh/day)</label><input type="number" id="dhwStandingLoss" value="2" step="0.1"></div>
+          <div><label>Price headroom (%)</label><input type="number" id="dhwHeadroom" value="0" step="5"></div>
+        </div>
+        <div class="row">
+          <div><label>Immersion controller cost (£)</label><input type="number" id="immersionCost" placeholder="0" step="10"></div>
+          <div><label>Hot water gas (kWh/day)</label><input type="number" id="dhwGasPerDay" placeholder="auto — quietest months" step="0.1"></div>
+        </div>
+        <div class="note">Needs your gas CSV. The immersion runs only in half-hours priced below the
+          gas-equivalent cost of the same heat (gas unit rate ÷ boiler efficiency, both under Your
+          data), so whatever it cannot cover stays on gas and the swap cannot lose money. PV surplus
+          is priced at the export it would forgo. Leave the hot-water figure blank to take it from
+          the three lowest-gas months in your CSV — in winter that window is mostly space heating,
+          which an immersion cannot displace.</div>
+        <div id="dhwInertNote" class="note hide"><b>Inactive:</b> the heat pump is set to
+          &ldquo;from my gas CSV&rdquo;, which already converts every gas kWh to electricity, hot
+          water included. Set the heat pump to None to price the immersion on its own.</div>
+      </div>
     </div>
 
       <div class="panel">

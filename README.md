@@ -135,6 +135,7 @@ node test/causal.mjs     # JS vs Python parity on fixtures, + causality guard
 node test/dom.mjs        # index.html/app.js id cross-check + FlowDiagram DOM stub
 node test/e2e.mjs        # whole-year totals via the live Octopus API
 node test/pv_fetch.mjs   # PV series builder used by the scorer, against Open-Meteo
+python3 test/hot_water.py  # real browser: the immersion card fires, and refuses to when dear
 ```
 
 `test/score.mjs` is the offline £/yr scorer: it replays a real usage CSV against a real
@@ -169,6 +170,34 @@ shape for a weather-compensated unit) or derived from a **gas CSV**, which is mu
 gas kWh → useful heat (× boiler efficiency) → electricity (÷ COP), on the real metered
 shape. The annual total drives the result far more than the shape, because the battery
 time-shifts the load anyway.
+
+## Hot water
+
+Prices running an immersion heater instead of the boiler's timed cylinder reheat, on the
+half-hours where that is actually cheaper. The gas CSV supplies the load directly: pick the
+window the boiler currently fires in, and the metered gas inside it — capped at the
+hot-water share and at what the cylinder physically holds — is the heat to displace. The
+hot-water share defaults to the block's daily mean over the three lowest-gas months in the
+file, when the boiler is doing nothing else; set it by hand if your data has no full month.
+
+The immersion then takes only the half-hours priced below the gas-equivalent cost of the
+same heat, `gas unit rate ÷ boiler efficiency`. Everything it cannot cover stays on gas, so
+the swap cannot lose money; the interesting output is usually how *few* days clear the bar.
+A slot already covered by PV surplus is priced at the export it forgoes rather than the
+import rate, the same substitution `solveHorizon` makes when costing a battery refill, and
+heating ahead of the draw is charged a pro-rata share of the cylinder's daily standing loss.
+
+```sh
+node test/immersion.mjs --usage usage-electric.csv --gas usage-gas.csv --prices prices-agile-J.csv
+node test/immersion.mjs ... --runFrom 00:00 --runTo 05:00 --kw 3 --loss 2   # respect a 05:00 draw
+node test/immersion.mjs ... --flat 8.625 --runFrom 00:30 --runTo 05:30      # a fixed night rate
+```
+
+On the author's own data (region J Agile, Aug 2025 – Aug 2026, gas 6.238 p/kWh, boiler 0.85)
+the breakeven is 7.34 p/kWh and only 7.7% of the year's half-hours clear it, so displacing
+the 05:00 reheat is worth about **£9/yr** overnight and **£23/yr** if the immersion may run
+at any hour — against £102/yr of gas. Octopus Go's 8.625 p night rate never clears it at
+all. The case that does pay is PV surplus, which is why the slot pricing looks at export.
 
 ## Known limits
 

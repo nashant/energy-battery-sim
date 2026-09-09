@@ -509,4 +509,27 @@ import { PvForecaster } from '../js/causal.js';
   ok('pv: no slot both grid-charges and discharges (contiguous)', !both(p.chg));
 }
 
+// heatPumpFromGas buckets by day when gas is metered coarser than the electricity CSV. The
+// usage index is keyed by the LOCAL day, so the gas side has to be too: under BST a 00:30
+// local gas row is 23:30 UTC the day before, and keying it by UTC drops it a day.
+import { heatPumpFromGas, parseUsage } from '../js/data.js';
+
+const HEAD = 'Consumption (kwh), Estimated Cost Inc. Tax (p), Standing Charge Inc. Tax (p), Start, End';
+const halfHourly = (d) => [...Array(48)].map((_, i) => {
+  const hh = `${String(Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '30' : '00'}`;
+  return `0.1000, 0, 0, 2026-07-${d}T${hh}:00+01:00, 2026-07-${d}T${hh}:30+01:00`;
+}).join('\n');
+
+const bstUse = parseUsage([HEAD, halfHourly('06'), halfHourly('07')].join('\n'));
+// one daily gas row stamped 00:15 local on the 7th: off the half-hour grid, so no usage slot
+// shares its instant and it must take the spreading path. Under BST that instant is 23:15 UTC
+// on the 6th, so a UTC-keyed lookup would file it under the wrong day.
+const bstGas = parseGas(`${HEAD}\n48.0000, 0, 0, 2026-07-07T00:15:00+01:00, 2026-07-07T00:45:00+01:00`);
+const hp = heatPumpFromGas(bstUse, bstGas, 0.85, 3.0);
+const on7th = bstUse.wall.reduce((a, w, i) => a + (w.slice(0, 10) === '2026-07-07' ? hp.add[i] : 0), 0);
+ok('coarse gas spreads over the local day it was metered on', close(on7th, 48 * 0.85 / 3, 1e-9));
+const on6th = bstUse.wall.reduce((a, w, i) => a + (w.slice(0, 10) === '2026-07-06' ? hp.add[i] : 0), 0);
+ok('none of it lands on the UTC day before', close(on6th, 0, 1e-9));
+ok('the spreading path was the one exercised', hp.info.spreadKwh > 0);
+
 process.exit(fail ? 1 : 0);

@@ -88,7 +88,7 @@ export function parseGas(text) {
   if (!st || (!kc && !mc)) {
     throw new Error(`Gas CSV needs a Start column and a kWh or m³ column. Found: ${keys.join(', ')}`);
   }
-  const out = { utc: [], kwh: [], actualP: [], scP: [], unit: kc ? 'kWh' : 'm³' };
+  const out = { utc: [], wall: [], kwh: [], actualP: [], scP: [], unit: kc ? 'kWh' : 'm³' };
   for (const r of rows) {
     const utc = Date.parse(r[st]);
     if (Number.isNaN(utc)) continue;
@@ -97,6 +97,7 @@ export function parseGas(text) {
     if (Number.isNaN(k) && mc && r[mc] !== '') k = parseFloat(r[mc]) * M3_TO_KWH;
     if (Number.isNaN(k)) continue;
     out.utc.push(utc);
+    out.wall.push(r[st].slice(0, 16).replace('T', ' '));
     out.kwh.push(k);
     out.actualP.push(cc ? (parseFloat(r[cc]) || 0) : 0);
     out.scP.push(sc ? (parseFloat(r[sc]) || 0) : 0);
@@ -110,11 +111,11 @@ export function parseGas(text) {
 // standing charge = total SC / distinct days covered. Nulls when the columns are
 // absent or empty — the caller falls back to manual inputs or warns.
 export function gasImpliedRates(gas) {
-  if (!gas || !gas.actualP || !gas.scP) return { unitRateP: null, scPerDayP: null };
+  if (!gas || !gas.actualP || !gas.scP || !gas.wall) return { unitRateP: null, scPerDayP: null };
   const kwh = gas.kwh.reduce((a, b) => a + b, 0);
   const cost = gas.actualP.reduce((a, b) => a + b, 0);
   const sc = gas.scP.reduce((a, b) => a + b, 0);
-  const days = new Set(gas.utc.map((t) => new Date(t).toISOString().slice(0, 10))).size;
+  const days = new Set(gas.wall.map((w) => w.slice(0, 10))).size;   // local day, as everywhere else
   return {
     unitRateP: kwh > 0 && cost > 0 ? cost / kwh : null,
     scPerDayP: sc > 0 && days > 0 ? sc / days : null,
@@ -137,12 +138,14 @@ export function heatPumpFromGas(usage, gas, boilerEff, cop) {
   const coveredDays = new Set();
   let unmatched = 0, spread = 0;
   for (let g = 0; g < gas.utc.length; g++) {
-    coveredDays.add(new Date(gas.utc[g]).toISOString().slice(0, 10));
+    // dayIdx is keyed by the LOCAL day, so the gas side must be too -- under BST a 00:30
+    // local row is 23:30 UTC the day before, and a UTC key would file it a day early
+    const d = gas.wall[g].slice(0, 10);
+    coveredDays.add(d);
     const e = gas.kwh[g] * boilerEff / cop;
     const i = idx.get(gas.utc[g]);
     if (i !== undefined) { add[i] += e; continue; }
     // gas may be metered on a coarser cadence (often daily); spread across that day
-    const d = new Date(gas.utc[g]).toISOString().slice(0, 10);
     const slots = dayIdx.get(d);
     if (!slots) { unmatched += e; continue; }
     for (const j of slots) add[j] += e / slots.length;

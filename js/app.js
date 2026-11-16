@@ -631,7 +631,7 @@ function render() {
   $('statsNote').innerHTML =
     `${withBat.kwh.toLocaleString('en-GB', { maximumFractionDigits: 0 })} kWh over ${withBat.nDays.toFixed(2)} days` +
     (hpInfo ? ` (includes ${hpInfo.hpKwh.toFixed(0)} kWh heat pump)` : '') +
-    ` · import ${m.impMin.toFixed(2)}–${m.impMax.toFixed(2)}p, mean ${m.impMean.toFixed(2)}p, ${m.negSlots} negative slots` +
+    ` · import${m.importLatest ? " at today's rates" : ''} ${m.impMin.toFixed(2)}–${m.impMax.toFixed(2)}p, mean ${m.impMean.toFixed(2)}p, ${m.negSlots} negative slots` +
     ` · standing charge ${m.scPerDay.toFixed(3)} p/day${m.scDistinct > 1 ? ` (${m.scDistinct} rate periods)` : ''}` +
     `<br>battery active ${withBat.batteryDays}/${withBat.dayCount} days · ` +
     `${withBat.cycled.toFixed(0)} kWh/yr through the pack · mean ${withBat.meanThroughput.toFixed(1)} kWh/day ` +

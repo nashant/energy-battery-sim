@@ -389,6 +389,39 @@ ok('agile excludes flux export', !tariffExports('agile').includes('flux-export')
 ok('go defaults to no export', tariffExports('go')[0] === 'none');
 ok('agile defaults to agile outgoing', tariffExports('agile')[0] === 'agile-outgoing');
 
+// ---- latest-rate projection: today's Go schedule laid over a whole year by local clock
+import { londonSlot, latestSchedule } from '../js/tariffs.js';
+{
+  const H = 3600000, d = (day, h) => Date.UTC(2026, 10, day, 0) + h * H;   // November: GMT
+  // superseded day at the old price, then two days at the new one, published to the 18th
+  const go = [
+    [d(15, 0.5), d(15, 5.5), 8.63], [d(15, 5.5), d(16, 0.5), 30.0],
+    [d(16, 0.5), d(16, 5.5), 9.4], [d(16, 5.5), d(17, 0.5), 34.9],
+    [d(17, 0.5), d(17, 5.5), 9.4], [d(17, 5.5), d(18, 0.5), 34.9],
+  ];
+  const sched = latestSchedule(go, d(19, 0));
+  ok('schedule prices all 48 local slots', sched.every((v) => v !== null));
+  ok('cheap window is 00:30–05:30 at the newest rate',
+     sched.every((v, s) => v === (s >= 1 && s < 11 ? 9.4 : 34.9)));
+  ok('summer 23:30Z is 00:30 local, so it gets the cheap rate',
+     sched[londonSlot(Date.UTC(2026, 6, 8, 23, 30))] === 9.4);
+  ok('summer 00:00Z is 01:00 local', londonSlot(Date.UTC(2026, 6, 9, 0, 0)) === 2);
+  ok('summer 04:30Z is 05:30 local, back on the day rate',
+     sched[londonSlot(Date.UTC(2026, 6, 9, 4, 30))] === 34.9);
+  // an open-ended flat rate is capped at the horizon rather than walked from 2100
+  ok('open-ended flat rate fills every slot',
+     latestSchedule([[d(1, 0), 4102444800000, 12]], d(19, 0)).every((v) => v === 12));
+  ok('no published rates leaves the schedule empty',
+     latestSchedule([], d(19, 0)).every((v) => v === null));
+  // spring-forward day: 01:00–02:00 local never happens, the day before must fill it
+  const mar = (day, h) => Date.UTC(2026, 2, day, 0) + h * H;
+  const spring = latestSchedule([[mar(27, 0), mar(30, 0), 7]], mar(30, 0));
+  ok('23-hour day still prices 01:00 and 01:30', spring[2] === 7 && spring[3] === 7);
+  for (const k of ['go', 'cosy', 'flux']) ok(`${k} is priced at the latest rate`, IMPORT_TARIFFS[k].latest === true);
+  ok('agile keeps its half-hourly history',
+     !IMPORT_TARIFFS.agile.latest && !EXPORT_TARIFFS['agile-outgoing'].latest);
+}
+
 // ---- solar helpers (js/solar.js): pure, no network
 import { bearingToAzimuth, toHalfHours, alignToUsage, arrayKwh, sumArrays } from '../js/solar.js';
 ok('azimuth: south wall is 0', bearingToAzimuth(180) === 0);

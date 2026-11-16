@@ -14,6 +14,9 @@ export const REGIONS = {
 
 // exports: the export tariffs Octopus permits with each import, default first, per the
 // Smart Tariffs T&Cs (https://octopus.energy/policies/smart-tariffs-terms-and-condition/).
+// latest: a fixed time-of-day tariff, priced at today's rates for the whole period -- the
+// question is what the tariff would cost from now on, not what it cost last year. The Agile
+// pair has no "today's rate" to project, so it stays on its real half-hourly history.
 export const IMPORT_TARIFFS = {
   agile: {
     code: 'AGILE-24-10-01', name: 'Agile Octopus',
@@ -21,7 +24,7 @@ export const IMPORT_TARIFFS = {
     exports: ['agile-outgoing', 'outgoing-var', 'prime', 'seg', 'flat', 'none'],
   },
   go: {
-    code: 'GO-VAR-22-10-14', name: 'Octopus Go',
+    code: 'GO-VAR-22-10-14', name: 'Octopus Go', latest: true,
     note: 'Cheap 00:30–05:30, flat day rate. Designed for customers with an EV or plug-in ' +
           'hybrid charged at home (Smart Tariffs T&Cs §2.1.3) — Octopus can move you to ' +
           'another tariff if you do not have one. ' +
@@ -29,13 +32,13 @@ export const IMPORT_TARIFFS = {
     exports: ['none', 'seg', 'outgoing-var', 'agile-outgoing', 'flat'],
   },
   flux: {
-    code: 'FLUX-IMPORT-23-02-14', name: 'Octopus Flux (import)',
+    code: 'FLUX-IMPORT-23-02-14', name: 'Octopus Flux (import)', latest: true,
     note: 'For solar + battery owners. Cheap overnight, peak 16:00–19:00. A combined ' +
           'import/export tariff: Flux Export is the only export allowed (§2.7.1).',
     exports: ['flux-export'],
   },
   cosy: {
-    code: 'COSY-22-12-08', name: 'Cosy Octopus',
+    code: 'COSY-22-12-08', name: 'Cosy Octopus', latest: true,
     note: 'Cheap 04:00–07:00, 13:00–16:00, 22:00–00:00; peak 16:00–19:00. Needs a heat pump, ' +
           'electric boiler or electric radiators. Pairs only with Outgoing SEG, Outgoing ' +
           'Octopus or Agile Outgoing (§2.6.2).',
@@ -46,13 +49,12 @@ export const IMPORT_TARIFFS = {
 export const EXPORT_TARIFFS = {
   none: { code: null, name: 'No export tariff' },
   'agile-outgoing': { code: 'AGILE-OUTGOING-19-05-13', name: 'Agile Outgoing (half-hourly)' },
-  'outgoing-var': { code: 'OUTGOING-VAR-24-10-26', name: 'Outgoing Octopus (flat)' },
-  'flux-export': { code: 'FLUX-EXPORT-23-02-14', name: 'Flux Export' },
+  'outgoing-var': { code: 'OUTGOING-VAR-24-10-26', name: 'Outgoing Octopus (flat)', latest: true },
+  'flux-export': { code: 'FLUX-EXPORT-23-02-14', name: 'Flux Export', latest: true },
   prime: {
-    code: 'OUTGOING-PRIME-FIX-12M-26-06-23', name: 'Prime Outgoing (9p/16p)',
-    warn: 'Launched 2026-06-23, so most historical slots have no published rate and fall ' +
-          'back to the flat rate below. Pairing with Agile is not stated in the Smart ' +
-          'Tariffs T&Cs — check eligibility with Octopus.',
+    code: 'OUTGOING-PRIME-FIX-12M-26-06-23', name: 'Prime Outgoing (9p/16p)', latest: true,
+    warn: 'Pairing Prime Outgoing with Agile is not stated in the Smart Tariffs T&Cs — ' +
+          'check eligibility with Octopus.',
   },
   seg: { code: null, flat: 4.1, name: 'SEG (flat)' },
   flat: { code: null, flat: 12.0, name: 'Custom flat rate' },
@@ -159,6 +161,51 @@ function series(periods, instants) {
   return out;
 }
 
+// ---------------------------------------------------------------- latest-rate projection
+
+const DAY = 86400000;
+const SLOT = 30 * 60000;
+const londonHM = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+});
+
+// Half-hour of the London wall clock (0..47). These tariffs' windows are local-time ones,
+// so a winter 00:30Z period and a summer 23:30Z period are the same slot.
+export function londonSlot(ms) {
+  const [h, m] = londonHM.format(ms).split(':');
+  return h * 2 + (m >= 30 ? 1 : 0);
+}
+
+// The newest published rate for each local half-hour, as a 48-entry day (null = none).
+// Walks back two days from the last published instant and keeps the first hit per slot,
+// so a 23-hour changeover day cannot leave its missing hour unpriced.
+export function latestSchedule(periods, horizonMs) {
+  const sched = new Array(48).fill(null);
+  if (!periods.length) return sched;
+  const end = Math.min(horizonMs, Math.max(...periods.map((r) => r[1])));
+  let i = periods.length - 1;
+  for (let t = Math.floor((end - 1) / SLOT) * SLOT, k = 0; k < 96; k++, t -= SLOT) {
+    while (i >= 0 && periods[i][0] > t) i--;
+    if (i < 0) break;
+    const s = londonSlot(t);
+    if (sched[s] === null && t < periods[i][1]) sched[s] = periods[i][2];
+  }
+  return sched;
+}
+
+// Rates for `instants`: the real history, or for a `latest` tariff today's schedule laid
+// over every day. The window is anchored to the UTC day so the IndexedDB key rolls daily.
+async function ratesFor(meta, region, endpoint, instants, startMs, endMs, onProgress) {
+  if (!meta.latest) {
+    return series(await fetchPeriods(meta.code, region, endpoint, startMs, endMs, onProgress), instants);
+  }
+  const today = Math.floor(Date.now() / DAY) * DAY;
+  const horizon = today + 2 * DAY;
+  const sched = latestSchedule(
+    await fetchPeriods(meta.code, region, endpoint, today - 3 * DAY, horizon, onProgress), horizon);
+  return instants.map((t) => sched[londonSlot(t)]);
+}
+
 export async function buildPrices(opts) {
   const { importKey, exportKey, region, instants, flatExport, onProgress } = opts;
   const startMs = instants[0];
@@ -166,24 +213,21 @@ export async function buildPrices(opts) {
   const imeta = IMPORT_TARIFFS[importKey];
   const warnings = [];
 
-  const ip = await fetchPeriods(imeta.code, region, 'standard-unit-rates', startMs, endMs, onProgress);
-  const impRaw = series(ip, instants);
+  const impRaw = await ratesFor(imeta, region, 'standard-unit-rates', instants, startMs, endMs, onProgress);
   const missImp = impRaw.filter((v) => v === null).length;
   if (missImp) warnings.push(`${missImp.toLocaleString()} slots had no published import rate and were treated as 0p.`);
   const imp = impRaw.map((v) => (v === null ? 0 : v));
 
-  const scp = await fetchPeriods(imeta.code, region, 'standing-charges', startMs, endMs, onProgress);
-  const scSeries = series(scp, instants);
-  // accumulate per slot, so a part-day at either end is pro-rated and mid-period
-  // standing-charge changes (Go's and Cosy's move quarterly) are honoured exactly
+  const scSeries = await ratesFor(imeta, region, 'standing-charges', instants, startMs, endMs, onProgress);
+  // accumulate per slot, so a part-day at either end is pro-rated and a mid-period
+  // standing-charge change on Agile is honoured exactly
   const scTotalP = scSeries.reduce((a, v) => a + (v || 0) / 48, 0);
-  const scDistinct = new Set(scp.map((r) => r[2])).size;
+  const scDistinct = new Set(scSeries.filter((v) => v !== null)).size;
 
   const emeta = EXPORT_TARIFFS[exportKey];
   let exp;
   if (emeta.code) {
-    const ep = await fetchPeriods(emeta.code, region, 'standard-unit-rates', startMs, endMs, onProgress);
-    const raw = series(ep, instants);
+    const raw = await ratesFor(emeta, region, 'standard-unit-rates', instants, startMs, endMs, onProgress);
     const fb = flatExport ?? emeta.flat ?? 0;
     const gaps = raw.filter((v) => v === null).length;
     if (gaps) {
@@ -203,6 +247,7 @@ export async function buildPrices(opts) {
     imp, exp, scTotalP, warnings,
     meta: {
       importName: imeta.name, importNote: imeta.note, exportName: emeta.name,
+      importLatest: !!imeta.latest, exportLatest: !!emeta.latest,
       scPerDay: scTotalP / (instants.length / 48),
       scDistinct,
       impMin: Math.min(...imp), impMax: Math.max(...imp),

@@ -178,6 +178,9 @@ time-shifts the load anyway.
 - G100 limits **net** export at the connection point; this caps the battery's **gross**
   export. They diverge only in rare negative-price slots where the optimiser exports while
   leaving residual load on the grid. Capping gross is the conservative direction.
-- Prime Outgoing launched 2026-06-23, so historical slots fall back to a flat rate.
+- Go, Cosy, Flux and the fixed export tariffs (Outgoing, Flux Export, Prime) are priced at
+  **today's** rates and standing charge for the whole period, laid over each day by local
+  clock time — the answer is what the tariff costs from now on. Agile and Agile Outgoing
+  use their real half-hourly history. The schedule is re-fetched once a day.
 - PV is modelled from a 2 km weather model, not a site measurement; shading is not
   modelled beyond the losses percentage.

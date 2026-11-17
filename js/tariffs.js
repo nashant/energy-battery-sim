@@ -193,6 +193,34 @@ export function latestSchedule(periods, horizonMs) {
   return sched;
 }
 
+// A rate series folded onto the local day for display: `slots` is londonSlot of each value.
+// A fixed schedule merges into its price bands; anything that varies day to day (Agile)
+// becomes hourly mean/min/max. Rows are [fromSlot, toSlot, mean, min, max].
+export function rateProfile(values, slots) {
+  const acc = Array.from({ length: 48 }, () => ({ n: 0, sum: 0, min: Infinity, max: -Infinity }));
+  values.forEach((v, i) => {
+    const a = acc[slots[i]];
+    a.n++; a.sum += v; a.min = Math.min(a.min, v); a.max = Math.max(a.max, v);
+  });
+  const fixed = acc.every((a) => a.n === 0 || a.min === a.max);
+  const rows = [];
+  for (let s = 0; s < 48; s++) {
+    const a = acc[s];
+    if (!a.n) continue;
+    const last = rows[rows.length - 1];
+    const joins = last && last[1] === s && (fixed ? last[3] === a.min : s % 2 === 1);
+    if (joins) {
+      last[1] = s + 1; last.n += a.n; last.sum += a.sum;
+      last[3] = Math.min(last[3], a.min); last[4] = Math.max(last[4], a.max);
+      last[2] = fixed ? last[3] : last.sum / last.n;   // a summed mean drifts off the rate
+    } else {
+      rows.push(Object.assign([s, s + 1, fixed ? a.min : a.sum / a.n, a.min, a.max],
+                              { n: a.n, sum: a.sum }));
+    }
+  }
+  return { fixed, rows };
+}
+
 // Rates for `instants`: the real history, or for a `latest` tariff today's schedule laid
 // over every day. The window is anchored to the UTC day so the IndexedDB key rolls daily.
 async function ratesFor(meta, region, endpoint, instants, startMs, endMs, onProgress) {
@@ -247,6 +275,7 @@ export async function buildPrices(opts) {
     imp, exp, scTotalP, warnings,
     meta: {
       importName: imeta.name, importNote: imeta.note, exportName: emeta.name,
+      importCode: imeta.code, exportCode: emeta.code,
       importLatest: !!imeta.latest, exportLatest: !!emeta.latest,
       scPerDay: scTotalP / (instants.length / 48),
       scDistinct,

@@ -390,7 +390,7 @@ ok('go defaults to no export', tariffExports('go')[0] === 'none');
 ok('agile defaults to agile outgoing', tariffExports('agile')[0] === 'agile-outgoing');
 
 // ---- latest-rate projection: today's Go schedule laid over a whole year by local clock
-import { londonSlot, latestSchedule } from '../js/tariffs.js';
+import { londonSlot, latestSchedule, rateProfile } from '../js/tariffs.js';
 {
   const H = 3600000, d = (day, h) => Date.UTC(2026, 10, day, 0) + h * H;   // November: GMT
   // superseded day at the old price, then two days at the new one, published to the 18th
@@ -417,6 +417,16 @@ import { londonSlot, latestSchedule } from '../js/tariffs.js';
   const mar = (day, h) => Date.UTC(2026, 2, day, 0) + h * H;
   const spring = latestSchedule([[mar(27, 0), mar(30, 0), 7]], mar(30, 0));
   ok('23-hour day still prices 01:00 and 01:30', spring[2] === 7 && spring[3] === 7);
+  // the "Loaded prices" panel: a fixed schedule folds into its bands, Agile into hours
+  const two = [...Array(96).keys()];
+  const goDay = rateProfile(two.map((i) => sched[i % 48]), two.map((i) => i % 48));
+  ok('fixed schedule folds into its three price bands', goDay.fixed && goDay.rows.length === 3 &&
+     goDay.rows[1][0] === 1 && goDay.rows[1][1] === 11 && goDay.rows[1][2] === 9.4);
+  const agile = rateProfile(two.map((i) => (i < 48 ? 10 : 20) + (i % 48)), two.map((i) => i % 48));
+  ok('a varying series folds into 24 hourly rows', !agile.fixed && agile.rows.length === 24);
+  ok('hourly row carries mean, min and max', close(agile.rows[0][2], 15.5) &&
+     agile.rows[0][3] === 10 && agile.rows[0][4] === 21);
+  ok('unseen slots are left out', rateProfile([5, 5], [4, 5]).rows.length === 1);
   for (const k of ['go', 'cosy', 'flux']) ok(`${k} is priced at the latest rate`, IMPORT_TARIFFS[k].latest === true);
   ok('agile keeps its half-hourly history',
      !IMPORT_TARIFFS.agile.latest && !EXPORT_TARIFFS['agile-outgoing'].latest);

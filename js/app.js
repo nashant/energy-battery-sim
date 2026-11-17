@@ -1,5 +1,5 @@
 import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
-         cacheGet, cachePut } from './tariffs.js';
+         cacheGet, cachePut, londonSlot, rateProfile } from './tariffs.js';
 import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, lifetimeReturn, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 import { lookupPostcode, buildPv } from './solar.js';
@@ -78,6 +78,65 @@ function syncControls() {
     `${$('capacity').value} kWh / ${$('inverterKw').value} kW`;
 }
 window.addEventListener('resize', syncControls);
+
+// ------------------------------------------------------------------ loaded prices
+
+const hhmm = (s) => `${String((s >> 1) % 24).padStart(2, '0')}:${s & 1 ? '30' : '00'}`;
+
+function ratesTable(title, code, values, slots) {
+  const { fixed, rows } = rateProfile(values, slots);
+  const head = `<div class="mt12"><b>${title}</b>${code ? ` · ${code}` : ''}</div>`;
+  if (!rows.length) return `${head}<div>no rates</div>`;
+  const body = rows.map((r) => `<tr><td>${hhmm(r[0])}–${hhmm(r[1])}</td>` +
+    (fixed ? `<td>${r[2].toFixed(2)}</td>`
+           : `<td>${r[2].toFixed(2)}</td><td>${r[3].toFixed(2)}</td><td>${r[4].toFixed(2)}</td>`) +
+    '</tr>').join('');
+  return `${head}<table><tr><th>Local time</th>` +
+    (fixed ? '<th>p/kWh</th>' : '<th>mean p</th><th>min</th><th>max</th>') + `</tr>${body}</table>`;
+}
+
+// Fetches go through buildPrices so the panel shows exactly what a run will be priced on,
+// and a run straight afterwards finds them already cached.
+let ratesSeq = 0;
+async function refreshRates() {
+  if (!$('ratesBox').open) return;
+  const seq = ++ratesSeq;
+  const body = $('ratesBody');
+  body.innerHTML = '<span class="spinner"></span> fetching rates…';
+  try {
+    const p = params();
+    let instants = state.usage?.utc;
+    let span;
+    if (instants) {
+      const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+      span = `over your usage period, ${day(instants[0])} to ${day(instants[instants.length - 1])}`;
+    } else {
+      // no usage yet: yesterday is the newest whole day certain to be published
+      const start = (Math.floor(Date.now() / 86400000) - 1) * 86400000;
+      instants = Array.from({ length: 48 }, (_, i) => start + i * 1800000);
+      span = `for ${new Date(start).toISOString().slice(0, 10)} — load a usage CSV to see your own period`;
+    }
+    const pr = await buildPrices({ importKey: p.importKey, exportKey: p.exportKey,
+                                   region: p.region, instants, flatExport: p.flatExport });
+    if (seq !== ratesSeq) return;
+    const m = pr.meta;
+    const slots = instants.map(londonSlot);
+    const when = (latest) => (latest ? "today's rates" : span);
+    body.innerHTML =
+      ratesTable(`${m.importName} — ${when(m.importLatest)}`, m.importCode, pr.imp, slots) +
+      `<div>Standing charge ${m.scPerDay.toFixed(2)} p/day</div>` +
+      (p.exportKey === 'none' ? '<div class="mt12"><b>No export tariff</b></div>'
+        : ratesTable(`${m.exportName} — ${when(m.exportLatest || !m.exportCode)}`, m.exportCode, pr.exp, slots)) +
+      pr.warnings.map((x) => `<div class="warn">${x}</div>`).join('') +
+      `<div>Region ${p.region}, inc. VAT.</div>`;
+  } catch (e) {
+    if (seq === ratesSeq) body.textContent = e.message;
+  }
+}
+$('ratesBox').addEventListener('toggle', refreshRates);
+for (const id of ['region', 'importTariff', 'exportTariff', 'flatExport']) {
+  $(id).addEventListener('change', refreshRates);
+}
 for (const id of ['region', 'importTariff', 'exportTariff', 'capacity', 'inverterKw']) {
   $(id).addEventListener('change', syncControls);
 }
@@ -116,6 +175,7 @@ function wireDrop(dropId, inputId, onText) {
 function loadUsage(text, name, fromCache = false) {
   const u = parseUsage(text);
   state.usage = u;
+  refreshRates();
   const kwh = u.kwh.reduce((a, b) => a + b, 0);
   const days = u.utc.length / 48;
   $('usageInfo').innerHTML =

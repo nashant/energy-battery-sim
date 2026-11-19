@@ -537,7 +537,7 @@ $('runSweeps').onclick = async () => {
       await new Promise((r) => setTimeout(r, 0));
       const r0 = v === p[key] ? withBat
         : runSim({ ...base, params: { ...p, [key]: v, useBattery: true } });
-      return { v, total: r0.total };
+      return { v, total: r0.netTotal };
     };
     const caps = [];
     for (const v of sweepCapacities(p.capacity)) caps.push(await one('capacity', v, 'kWh pack'));
@@ -606,8 +606,9 @@ function render() {
   $('resultTitle').textContent =
     `${prices.meta.importName} · ${prices.meta.exportName} · region ${p.region}`;
 
-  const save = cur.total - withBat.total;
   const ax = withBat.axle;
+  // the bill card is the supplier's alone; Axle's payments join it only in the savings
+  const save = cur.total - withBat.netTotal;
   const cost = systemCost(p);
   // `cost` includes the array, so the battery-only figures (which measure
   // savedVsNoBattery, the marginal saving over a PV-netted baseline) divide by the
@@ -628,7 +629,7 @@ function render() {
     ? gasBillPounds(hpInfo, gasRate, p.gasScPerDay ?? gasImp.scPerDayP, withBat.nDays) : 0;
   const invest = cost + hpCost;
   const pbSave = (hpCost > 0 || gasBill > 0
-    ? currentTariffTotal(state.usage, null, curOverride(p)).total + gasBill - withBat.total
+    ? currentTariffTotal(state.usage, null, curOverride(p)).total + gasBill - withBat.netTotal
     : save) * annual;
   const pbBatt = paybackYears(battCost, withBat.savedVsNoBattery * annual, p.escPct);
   const pbCur = paybackYears(invest, pbSave, p.escPct);
@@ -661,15 +662,16 @@ function render() {
       `${(100 * withBat.pvExport / withBat.pvKwh).toFixed(0)}% exported · ` +
       `${(100 * withBat.pvSpill / withBat.pvKwh).toFixed(0)}% spilled`) : ''}
     ${card('Saving vs current', gbp(save), `${gbp(withBat.savedVsNoBattery)} of it from the battery` +
+           (ax ? `<br>bill ${gbp(cur.total - withBat.total)} + Axle ${gbp(ax.income)}` : '') +
            (withBat.wearP > 0 ? `<br>${gbp(save - withBat.wear)} net of battery wear` : ''),
            save >= 0 ? 'pos' : 'neg')}
     ${withBat.wearP > 0 ? card('Battery wear', `${gbp(withBat.wear * annual)}/yr`,
       `${withBat.wearP.toFixed(2)} p per kWh stored · ${(withBat.stored / withBat.usableCap * annual).toFixed(0)} cycles/yr ` +
       `→ ${(p.cycleLife / (withBat.stored / withBat.usableCap * annual)).toFixed(0)} yrs to ${p.cycleLife.toLocaleString('en-GB')} cycles`) : ''}
-    ${ax ? card('Axle events', gbp((ax.earnedP + ax.topUpP) / 100),
+    ${ax ? card('Axle earnings', gbp(ax.income),
       `${ax.events} event${ax.events === 1 ? '' : 's'} · ${ax.kwh.toFixed(1)} kWh exported at £1` +
       (ax.topUpP > 0 ? ` · ${gbp(ax.topUpP / 100)} of it the £10/month minimum` : '') +
-      '<br>already inside With battery') : ''}
+      '<br>paid by Axle, not part of the bill') : ''}
     ${invest > 0 ? card('Payback', fmtYears(pbCur) + fmtRoi(roiCur), [
       (costParts.length ? costParts.join(' + ') : gbp(invest)) +
         ` ÷ ${gbp(pbSave)}/yr vs your current setup`,
@@ -754,24 +756,25 @@ function renderCompare(rows, cur, cost = 0, p = {}) {
   $('results').classList.remove('hide');
   if (!WIDE()) $('controls').open = false;
   $('comparePanel').classList.remove('hide');
-  rows.sort((a, b) => a.wb.total - b.wb.total);
+  rows.sort((a, b) => a.wb.netTotal - b.wb.netTotal);
+  const axCol = rows.some((r) => r.wb.axle);
   const best = rows[0];
   $('compareTable').innerHTML =
-    `<thead><tr><th>Import</th><th>Export</th><th>No battery</th><th>With battery</th>
+    `<thead><tr><th>Import</th><th>Export</th><th>No battery</th><th>With battery</th>${axCol ? '<th>Axle</th>' : ''}
       <th>Saves vs current</th><th>Battery adds</th><th>Payback</th><th>Lifetime return</th><th>kWh cycled</th></tr></thead><tbody>` +
     rows.map((r) => `<tr class="${r === best ? 'best' : ''}">
       <td title="${r.note.replace(/"/g, '&quot;')}">${IMPORT_TARIFFS[r.ik].name}</td>
       <td>${r.ek === 'none' ? '—' : EXPORT_TARIFFS[r.ek].name}</td>
-      <td>${gbp(r.nb.total)}</td><td><b>${gbp(r.wb.total)}</b></td>
-      <td class="${cur.total - r.wb.total >= 0 ? 'pos' : 'neg'}">${gbp(cur.total - r.wb.total)}</td>
+      <td>${gbp(r.nb.total)}</td><td><b>${gbp(r.wb.total)}</b></td>${axCol ? `<td>${gbp(r.wb.axle?.income ?? 0)}</td>` : ''}
+      <td class="${cur.total - r.wb.netTotal >= 0 ? 'pos' : 'neg'}">${gbp(cur.total - r.wb.netTotal)}</td>
       <td>${gbp(r.wb.savedVsNoBattery)}</td>
-      <td>${fmtYears(paybackYears(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, escPct))}</td>
+      <td>${fmtYears(paybackYears(cost, (cur.total - r.wb.netTotal) * 365 / r.wb.nDays, escPct))}</td>
       ${(() => { const life = lifeSpan(p, r.wb, 365 / r.wb.nDays);
-                 const lt = life ? lifetimeReturn(cost, (cur.total - r.wb.total) * 365 / r.wb.nDays, life.years, escPct) : null;
+                 const lt = life ? lifetimeReturn(cost, (cur.total - r.wb.netTotal) * 365 / r.wb.nDays, life.years, escPct) : null;
                  return lt ? `<td class="${lt.net >= 0 ? 'pos' : 'neg'}" title="over ${life.years.toFixed(1)} yrs (${life.src})">${lt.net >= 0 ? '+' : ''}${gbp(lt.net)}</td>` : '<td>—</td>'; })()}
       <td>${r.wb.cycled.toFixed(0)}</td></tr>`).join('') +
     `</tbody><tfoot><tr><td>Current tariff</td><td>—</td><td>${gbp(cur.total)}</td>
-      <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tfoot>`;
+      <td>—</td>${axCol ? '<td>—</td>' : ''}<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tfoot>`;
 }
 
 function renderMonths() {
@@ -781,9 +784,8 @@ function renderMonths() {
   withBat.perDay.forEach((d, i) => {
     const k = d.day.slice(0, 7);
     if (!by.has(k)) {
-      // the monthly minimum is paid per month, not per day, so it joins the cost here
       const a = ax?.byMonth.get(k);
-      by.set(k, { kwh: 0, base: 0, cost: a ? -a.topUpP / 100 : 0, out: 0, pv: 0,
+      by.set(k, { kwh: 0, base: 0, cost: 0, out: 0, pv: 0,
                   axle: a ? (a.earnedP + a.topUpP) / 100 : 0 });
     }
     const o = by.get(k);
@@ -794,11 +796,11 @@ function renderMonths() {
   $('monthTable').innerHTML =
     `<thead><tr><th>Month</th><th>kWh</th>${solar ? '<th>Solar kWh</th>' : ''}
       <th>No battery</th><th>With battery</th>
-      <th>Saved</th>${ax ? '<th>of it Axle</th>' : ''}<th>kWh cycled</th></tr></thead><tbody>` +
+      <th>Saved${ax ? ' incl. Axle' : ''}</th>${ax ? '<th>Axle</th>' : ''}<th>kWh cycled</th></tr></thead><tbody>` +
     [...by.entries()].map(([k, o]) => `<tr><td>${k}</td>
       <td>${o.kwh.toFixed(0)}</td>${solar ? `<td>${o.pv.toFixed(0)}</td>` : ''}
       <td>${gbp(o.base)}</td><td>${gbp(o.cost)}</td>
-      <td class="pos">${gbp(o.base - o.cost)}</td>${ax ? `<td>${gbp(o.axle)}</td>` : ''}<td>${o.out.toFixed(0)}</td></tr>`).join('') +
+      <td class="pos">${gbp(o.base - o.cost + o.axle)}</td>${ax ? `<td>${gbp(o.axle)}</td>` : ''}<td>${o.out.toFixed(0)}</td></tr>`).join('') +
     '</tbody>';
 }
 
@@ -855,7 +857,7 @@ function selectDay(day) {
   const d = state.run.withBat.perDay.find((x) => x.day === day);
   $('dayNote').innerHTML =
     `${d.kwh.toFixed(2)} kWh used · no battery ${gbp(d.baseP / 100)} · with battery ` +
-    `${gbp(d.costP / 100)} · <b>saved ${gbp(d.savedP / 100)}</b>` +
+    `${gbp(d.costP / 100)}${d.axleP > 0 ? ` · Axle paid ${gbp(d.axleP / 100)}` : ''} · <b>saved ${gbp(d.savedP / 100)}</b>` +
     (d.window ? ` · charge window ${d.window[0]}–${d.window[1]}` : ' · battery unused') +
     ` · ${d.kwhOut.toFixed(1)} kWh through the pack` +
     ` · ${slots.length} slots${slots.length !== 48 ? ' (DST day)' : ''}`;
@@ -875,7 +877,7 @@ function showSlot(i) {
   state.flow.update(s, state.run.p.capacity);
   $('slotTable').innerHTML = `
     ${trow('Import price', `${s.imp.toFixed(2)} p/kWh`)}
-    ${trow('Export price', `${s.exp.toFixed(2)} p/kWh${s.axle ? ' · incl. £1 Axle event' : ''}`)}
+    ${trow('Export price', `${s.exp.toFixed(2)} p/kWh${s.axleUpP > 0 ? ' · + £1 from Axle (event)' : ''}`)}
     ${trow('House load', `${s.load.toFixed(3)} kWh (${(s.load * 2).toFixed(2)} kW)`)}
     ${s.pvGen > 1e-9 ? trow('Solar', `${s.pvGen.toFixed(3)} kWh · ` +
       `${Math.max(0, s.pvToHouse).toFixed(2)} house / ${s.pvToBattery.toFixed(2)} battery / ` +
@@ -887,7 +889,8 @@ function showSlot(i) {
     ${trow('Grid import', `${s.gridImp.toFixed(3)} kWh`)}
     ${trow('Grid export', s.gridExp > 1e-9 ? `${s.gridExp.toFixed(3)} kWh` : '—')}
     ${trow('State of charge', `${s.soc.toFixed(2)} kWh (${s.socPct.toFixed(0)}%)`)}
-    ${trow('Slot cost', `${s.costP >= 0 ? '' : '−'}${Math.abs(s.costP).toFixed(2)}p`)}`;
+    ${trow('Slot cost', `${s.costP >= 0 ? '' : '−'}${Math.abs(s.costP).toFixed(2)}p`)}
+    ${s.axleP > 0 ? trow('Axle payment', `${s.axleP.toFixed(2)}p`) : ''}`;
   const cur = document.getElementById('cursor');
   if (cur) cur.setAttribute('x', 40 + (420 / state.daySlots.length) * i);
 }

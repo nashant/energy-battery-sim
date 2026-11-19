@@ -85,8 +85,9 @@ the code uses ES modules.
   export price for the battery run only (a no-battery run and the PV-only baseline earn
   nothing). The plan sees a normal event when its day's prices publish, matching Axle's
   day-before notice; a short-notice event (a second, opt-in checkbox) only from 2 h ahead.
-  A month earning under £10 is topped up to Axle's £10 minimum, pro-rated for a part month
-  and taken off the run's energy cost. Events are a snapshot (`js/axle.js`, to 18 Nov 2026)
+  A month earning under £10 is topped up to Axle's £10 minimum, pro-rated for a part month.
+  Axle's payments are shown on their own card and kept out of the With battery bill, which
+  is the supplier's alone; the savings, payback and comparison figures count both. Events are a snapshot (`js/axle.js`, to 18 Nov 2026)
   of the community-kept [Axle Event History](https://docs.google.com/spreadsheets/d/1ntwzF7lZGdc-JbXMasbBRNxCx49pV-5sUtl4i3mhbS8)
   sheet, by GSP region; test events are skipped.
 

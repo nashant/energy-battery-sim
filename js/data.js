@@ -370,10 +370,10 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null, axle = 
 // 16:00 publication, not from a user-chosen window boundary.
 export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axle = null }) {
   const cfg = makeCfg(params);
-  // Axle pays through the battery's inverter, so a no-battery run earns nothing from it and
-  // the PV-only baseline below stays on the plain export rate.
+  // Axle pays through the battery's inverter, so a no-battery run earns nothing from it.
+  // Its money is kept apart from the supplier's bill throughout: costP, energy and total are
+  // what the supplier charges, and Axle's payments only join in netTotal and the savings.
   const ax = axle && params.useBattery !== false ? axle : null;
-  const expB = ax ? exp.map((v, i) => v + ax.upP[i]) : exp;
   const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params, pv, ax);
   const axMonths = new Map();                          // 'YYYY-MM' -> { earnedP, slots }
   let axKwh = 0;
@@ -389,7 +389,8 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
     if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
     const gImp = def + cin - dl;                       // deficit after PV, plus grid charge, less discharge
     const gExp = dx + pvx;
-    const slotP = gImp * imp[i] - gExp * expB[i];
+    const slotP = gImp * imp[i] - gExp * exp[i];
+    const axleP = ax ? gExp * ax.upP[i] : 0;
     // no-battery baseline: PV serves the house, surplus exports under the cap (DC clipped by the inverter)
     const pvOnly = pv ? Math.min(load[i], pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut)) : 0;
     const pvOnlyExp = pv && allowX ? Math.min(pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut) - pvOnly, cfg.exportCap) : 0;
@@ -402,17 +403,18 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
       let m = axMonths.get(ym);
       if (!m) { m = { earnedP: 0, slots: 0 }; axMonths.set(ym, m); }
       m.slots++;
-      if (ax.upP[i] > 0) { m.earnedP += gExp * ax.upP[i]; axKwh += gExp; }
+      if (ax.upP[i] > 0) { m.earnedP += axleP; axKwh += gExp; }
     }
     let d = byDate.get(date);
     if (!d) {
-      d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, pv: 0, w0: null, w1: null };
+      d = { day: date, kwh: 0, baseP: 0, costP: 0, axleP: 0, kwhOut: 0, pv: 0, w0: null, w1: null };
       byDate.set(date, d);
     }
     d.kwh += load[i];
     d.baseP += baseSlotP;
     d.pv += pv ? pv.ac[i] + pv.dc[i] : 0;
     d.costP += slotP;
+    d.axleP += axleP;
     d.kwhOut += dl + dx;
     if (cin > 1e-9) {
       if (d.w0 === null) d.w0 = hhmm;
@@ -420,7 +422,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
     }
     slots[i] = {
       day: date, wall: usage.wall[i], hhmm,
-      imp: imp[i], exp: expB[i], axle: !!ax && ax.upP[i] > 0, load: load[i], chg: cin,
+      imp: imp[i], exp: exp[i], axleUpP: ax ? ax.upP[i] : 0, axleP, load: load[i], chg: cin,
       disLoad: dl, disExp: dx,
       pvGen: pv ? pv.ac[i] + pv.dc[i] : 0, pvToHouse: pvHouse,
       pvToBattery: pvc, pvExport: pvx, pvSpill: spill,
@@ -435,21 +437,22 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
   }
   const perDay = [...byDate.values()].map((d) => ({
     day: d.day, kwh: d.kwh, baseP: d.baseP, costP: d.costP,
-    savedP: d.baseP - d.costP, kwhOut: d.kwhOut, pv: d.pv,
+    axleP: d.axleP, savedP: d.baseP - d.costP + d.axleP, kwhOut: d.kwhOut, pv: d.pv,
     window: d.w0 !== null ? [d.w0, d.w1] : null,
     used: d.kwhOut > 1e-9,
   }));
 
   // Axle's monthly minimum: a covered month that earned less than the floor is topped up to
   // it, pro-rated when the run holds only part of the month. A month-level payment, so it
-  // comes off the run's energy cost here and never appears in a slot or a day.
+  // never appears in a slot or a day.
   let axEarnedP = 0, axTopUpP = 0;
   for (const [ym, m] of axMonths) {
     const days = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate();
     m.topUpP = ax.covered(ym) ? Math.max(0, ax.floorP * Math.min(1, m.slots / (days * 48)) - m.earnedP) : 0;
     axEarnedP += m.earnedP; axTopUpP += m.topUpP;
   }
-  const energy = (perDay.reduce((a, d) => a + d.costP, 0) - axTopUpP) / 100;
+  const energy = perDay.reduce((a, d) => a + d.costP, 0) / 100;
+  const axIncome = (axEarnedP + axTopUpP) / 100;       // £ paid by Axle, not the supplier
   // pack-kWh charged: PV cycles the pack exactly as grid import does, so both wear it
   const stored = exec.reduce((a, s) => a + s.cin + s.pvc, 0) * cfg.eff;
   const wear = stored * cfg.wearP / 100;                             // £, not in `energy`
@@ -459,8 +462,9 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
   return {
     energy, baseline, sc: scTotalP / 100,
     total: energy + scTotalP / 100,
+    netTotal: energy + scTotalP / 100 - axIncome,
     baselineTotal: baseline + scTotalP / 100,
-    savedVsNoBattery: baseline - energy,
+    savedVsNoBattery: baseline - energy + axIncome,
     kwh: load.reduce((a, b) => a + b, 0),
     nDays, slotCount: load.length,
     cycled, usableCap: cfg.cap,
@@ -475,7 +479,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axl
     pvExport: slots.reduce((a, s) => a + s.pvExport, 0),
     pvSpill: slots.reduce((a, s) => a + s.pvSpill, 0),
     warmupDays, replans,
-    axle: ax ? { events: ax.events, kwh: axKwh, earnedP: axEarnedP, topUpP: axTopUpP,
+    axle: ax ? { events: ax.events, kwh: axKwh, earnedP: axEarnedP, topUpP: axTopUpP, income: axIncome,
                  from: ax.from, to: ax.to, byMonth: axMonths } : null,
     perDay, slots,
   };

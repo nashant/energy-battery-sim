@@ -631,14 +631,25 @@ const simFor = (u, axle, extra = {}) => runSim({
   exp: u.wall.map(() => 8), scTotalP: 0, params: { ...AP, ...extra }, axle });
 const plain = simFor(june, null), withAx = simFor(june, axH);
 ok('axle: off by default — no axle result without a series', plain.axle === null);
-ok('axle: event export is paid on top of the export rate',
-   withAx.slots[june.wall.indexOf('2026-06-16 19:00')].exp === 108 && withAx.slots[june.wall.indexOf('2026-06-16 19:00')].axle);
+const evSlot = withAx.slots[june.wall.indexOf('2026-06-16 19:00')];
+ok('axle: an event slot keeps the supplier export rate and carries Axle\'s £1 beside it',
+   evSlot.exp === 8 && evSlot.axleUpP === 100 && close(evSlot.axleP, evSlot.gridExp * 100, 1e-9)
+   && close(evSlot.costP, -evSlot.gridExp * 8, 1e-9));
 ok('axle: the plan discharges to export through an event',
    withAx.slots[june.wall.indexOf('2026-06-16 19:00')].disExp > 1 && plain.slots[june.wall.indexOf('2026-06-16 19:00')].disExp < 1e-9);
 ok('axle: earnings are £1 per kWh exported in event slots', close(withAx.axle.earnedP, withAx.axle.kwh * 100, 1e-6) && withAx.axle.kwh > 5);
 ok('axle: a month earning over £10 gets no top-up', withAx.axle.earnedP > 1000 && withAx.axle.topUpP === 0);
-ok('axle: it lowers the bill and leaves the no-battery baseline alone',
-   withAx.total < plain.total - 5 && close(withAx.baseline, plain.baseline));
+ok('axle: the net total is the supplier bill less what Axle paid',
+   close(withAx.netTotal, withAx.total - withAx.axle.income) && close(plain.netTotal, plain.total)
+   && close(withAx.axle.income, (withAx.axle.earnedP + withAx.axle.topUpP) / 100));
+ok('axle: the supplier bill holds no Axle money',
+   close(withAx.energy, withAx.slots.reduce((a, s) => a + s.gridImp * s.imp - s.gridExp * s.exp, 0) / 100, 1e-6));
+ok('axle: net of its income the run beats the plain one, and the baseline is untouched',
+   withAx.netTotal < plain.total - 5 && close(withAx.baseline, plain.baseline));
+ok('axle: the battery\'s saving counts Axle\'s payments',
+   close(withAx.savedVsNoBattery, withAx.baseline - withAx.energy + withAx.axle.income));
+ok('axle: daily savings sum to the saving less the monthly top-ups',
+   close(withAx.perDay.reduce((a, d) => a + d.savedP, 0) / 100, withAx.savedVsNoBattery - withAx.axle.topUpP / 100, 1e-6));
 const nbAx = simFor(june, axH, { useBattery: false }), nb = simFor(june, null, { useBattery: false });
 ok('axle: a no-battery run earns nothing from it', nbAx.axle === null && close(nbAx.total, nb.total));
 
@@ -646,8 +657,8 @@ ok('axle: a no-battery run earns nothing from it', nbAx.axle === null && close(n
 const tiny = simFor(june, axH, { capacity: 1, inverterKw: 0.5 });
 ok('axle: a quiet month is topped up to £10',
    tiny.axle.earnedP < 1000 && close(tiny.axle.earnedP + tiny.axle.topUpP, 1000, 1e-6));
-ok('axle: the top-up comes off the energy cost',
-   close(tiny.energy, (tiny.perDay.reduce((a, d) => a + d.costP, 0) - tiny.axle.topUpP) / 100));
+ok('axle: the top-up is Axle income, not a cut in the supplier bill',
+   close(tiny.energy, tiny.perDay.reduce((a, d) => a + d.costP, 0) / 100) && close(tiny.axle.income, 10, 1e-6));
 const halfJune = londonUsage(2026, 6, 1, 15);
 const half = simFor(halfJune, axleSeries(halfJune, 'H'), { capacity: 1, inverterKw: 0.5 });
 ok('axle: a part month gets a pro-rated minimum', close(half.axle.earnedP + half.axle.topUpP, 500, 1e-6));

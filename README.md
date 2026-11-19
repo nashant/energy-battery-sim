@@ -80,6 +80,15 @@ the code uses ES modules.
   then off discharge to the house (PV serves that load instead and the pack keeps the
   energy), and only then clips PV. Each array has an **include in run** toggle, so it can
   be left out of a run (its cost too) without deleting it; the setting is remembered.
+- **Axle.** An optional checkbox replays Axle Energy's VPP grid events: £1 per kWh exported
+  during an event, on top of the export rate, so an event is a 100p uplift on that slot's
+  export price for the battery run only (a no-battery run and the PV-only baseline earn
+  nothing). The plan sees a normal event when its day's prices publish, matching Axle's
+  day-before notice; a short-notice event (a second, opt-in checkbox) only from 2 h ahead.
+  A month earning under £10 is topped up to Axle's £10 minimum, pro-rated for a part month
+  and taken off the run's energy cost. Events are a snapshot (`js/axle.js`, to 18 Nov 2026)
+  of the community-kept [Axle Event History](https://docs.google.com/spreadsheets/d/1ntwzF7lZGdc-JbXMasbBRNxCx49pV-5sUtl4i3mhbS8)
+  sheet, by GSP region; test events are skipped.
 
 ### Planner options
 
@@ -182,5 +191,10 @@ time-shifts the load anyway.
   **today's** rates and standing charge for the whole period, laid over each day by local
   clock time — the answer is what the tariff costs from now on. Agile and Agile Outgoing
   use their real half-hourly history. The schedule is re-fetched once a day.
+- Axle events are community-recorded, not Axle's own data, and per region only from each
+  region's first recorded event (May 2026 for most; earlier rows list only the regions a
+  participant reported). Months outside that get no events and no minimum. Every kWh
+  exported in an event slot is assumed paid at £1, and Axle does not guarantee a home is
+  called for every event in its area.
 - PV is modelled from a 2 km weather model, not a site measurement; shading is not
   modelled beyond the losses percentage.

@@ -575,4 +575,87 @@ const on6th = bstUse.wall.reduce((a, w, i) => a + (w.slice(0, 10) === '2026-07-0
 ok('none of it lands on the UTC day before', close(on6th, 0, 1e-9));
 ok('the spreading path was the one exercised', hp.info.spreadKwh > 0);
 
+// ---- Axle VPP events (js/axle.js): an export uplift for the region's recorded events, and
+// the £10/month minimum settled per month by runSim
+import { axleSeries, londonToUtc, AXLE_EVENTS } from '../js/axle.js';
+import { runSim } from '../js/data.js';
+
+ok('axle: BST local time is an hour ahead of UTC', londonToUtc('2026-07-07', '22:30') === Date.UTC(2026, 6, 7, 21, 30));
+ok('axle: GMT local time is UTC', londonToUtc('2026-11-17', '19:00') === Date.UTC(2026, 10, 17, 19, 0));
+ok('axle: every snapshot row is well formed', AXLE_EVENTS.every(([d, t, m, k, a]) =>
+  /^\d{4}-\d\d-\d\d$/.test(d) && /^\d\d:[03]0$/.test(t) && m % 30 === 0 && 'NST'.includes(k) && /^[A-HJ-NP]+$/.test(a)));
+
+// a London-clock usage series: `days` whole local days from a BST or GMT date
+const londonUsage = (y, mo, d, days, kwhAt = () => 0.3) => {
+  const t0 = londonToUtc(`${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`, '00:00');
+  const fmt = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/London', dateStyle: 'short', timeStyle: 'short' });
+  const u = { utc: [], wall: [], localFloat: [], kwh: [] };
+  for (let i = 0; i < days * 48; i++) {
+    const ms = t0 + i * 1800000, wall = fmt.format(ms);
+    u.utc.push(ms); u.wall.push(wall); u.localFloat.push(Date.parse(`${wall.replace(' ', 'T')}:00Z`));
+    u.kwh.push(kwhAt(i % 48));
+  }
+  return u;
+};
+const june = londonUsage(2026, 6, 1, 30);
+const upAt = (ax, u, wall) => ax.upP[u.wall.indexOf(wall)];
+
+const axH = axleSeries(june, 'H');
+ok('axle: region H gets its three June 2026 events', axH.events === 3);
+ok('axle: a one-hour event lifts both of its half-hours by 100p',
+   upAt(axH, june, '2026-06-16 19:00') === 100 && upAt(axH, june, '2026-06-16 19:30') === 100
+   && upAt(axH, june, '2026-06-16 20:00') === 0 && upAt(axH, june, '2026-06-16 18:30') === 0);
+ok('axle: an event for other regions leaves H alone', upAt(axH, june, '2026-06-30 21:30') === 0);
+ok('axle: coverage runs from the region\'s first event to the snapshot end',
+   axH.from === '2026-05' && axH.to === '2026-11' && axH.covered('2026-06') && !axH.covered('2026-04') && !axH.covered('2026-12'));
+ok('axle: a region with earlier reports is covered earlier', axleSeries(june, 'A').from === '2025-12');
+
+const aug = londonUsage(2026, 8, 1, 31);
+const augN = axleSeries(aug, 'H'), augS = axleSeries(aug, 'H', { shortNotice: true });
+ok('axle: short-notice events are left out unless opted in',
+   upAt(augN, aug, '2026-08-05 21:00') === 0 && upAt(augS, aug, '2026-08-05 21:00') === 100 && augS.events === augN.events + 2);
+const iS = aug.wall.indexOf('2026-08-05 21:00');
+ok('axle: a short-notice event is visible to the plan from 2 h before its start',
+   augS.visFrom[iS] === iS - 4 && augS.visFrom[iS + 1] === iS - 4);
+ok('axle: a two-hour event covers four slots',
+   ['18:00', '18:30', '19:00', '19:30'].every((t) => upAt(augN, aug, `2026-08-12 ${t}`) === 100)
+   && upAt(augN, aug, '2026-08-12 20:00') === 0);
+const nov = londonUsage(2026, 11, 1, 10);
+ok('axle: test events are never paid', upAt(axleSeries(nov, 'H', { shortNotice: true }), nov, '2026-11-06 14:00') === 0);
+
+// through the sim: cheap nights, 24p days, 8p export; a 10 kWh pack on a 5 kW inverter
+const AP = { capacity: 10, roundTrip: 0.9, dischargeFloorPct: 0, inverterKw: 5, exportLimitKw: null,
+             totalImportLimitKw: null, maxChargePrice: null, cycle: 'scattered', allowExport: true, useBattery: true };
+const simFor = (u, axle, extra = {}) => runSim({
+  usage: u, load: u.kwh.slice(), imp: u.wall.map((w) => (w.slice(11, 13) < '06' ? 8 : 24)),
+  exp: u.wall.map(() => 8), scTotalP: 0, params: { ...AP, ...extra }, axle });
+const plain = simFor(june, null), withAx = simFor(june, axH);
+ok('axle: off by default — no axle result without a series', plain.axle === null);
+ok('axle: event export is paid on top of the export rate',
+   withAx.slots[june.wall.indexOf('2026-06-16 19:00')].exp === 108 && withAx.slots[june.wall.indexOf('2026-06-16 19:00')].axle);
+ok('axle: the plan discharges to export through an event',
+   withAx.slots[june.wall.indexOf('2026-06-16 19:00')].disExp > 1 && plain.slots[june.wall.indexOf('2026-06-16 19:00')].disExp < 1e-9);
+ok('axle: earnings are £1 per kWh exported in event slots', close(withAx.axle.earnedP, withAx.axle.kwh * 100, 1e-6) && withAx.axle.kwh > 5);
+ok('axle: a month earning over £10 gets no top-up', withAx.axle.earnedP > 1000 && withAx.axle.topUpP === 0);
+ok('axle: it lowers the bill and leaves the no-battery baseline alone',
+   withAx.total < plain.total - 5 && close(withAx.baseline, plain.baseline));
+const nbAx = simFor(june, axH, { useBattery: false }), nb = simFor(june, null, { useBattery: false });
+ok('axle: a no-battery run earns nothing from it', nbAx.axle === null && close(nbAx.total, nb.total));
+
+// a pack too small to earn £10: the month is topped up to exactly the floor
+const tiny = simFor(june, axH, { capacity: 1, inverterKw: 0.5 });
+ok('axle: a quiet month is topped up to £10',
+   tiny.axle.earnedP < 1000 && close(tiny.axle.earnedP + tiny.axle.topUpP, 1000, 1e-6));
+ok('axle: the top-up comes off the energy cost',
+   close(tiny.energy, (tiny.perDay.reduce((a, d) => a + d.costP, 0) - tiny.axle.topUpP) / 100));
+const halfJune = londonUsage(2026, 6, 1, 15);
+const half = simFor(halfJune, axleSeries(halfJune, 'H'), { capacity: 1, inverterKw: 0.5 });
+ok('axle: a part month gets a pro-rated minimum', close(half.axle.earnedP + half.axle.topUpP, 500, 1e-6));
+
+// before the region's first recorded event: no events and no minimum, so nothing changes
+const jan = londonUsage(2026, 1, 1, 31);
+const janAx = axleSeries(jan, 'H'), janRun = simFor(jan, janAx);
+ok('axle: an uncovered month has no events and no minimum',
+   janAx.events === 0 && janRun.axle.topUpP === 0 && close(janRun.total, simFor(jan, null).total));
+
 process.exit(fail ? 1 : 0);

@@ -196,7 +196,7 @@ const slotOfDay = (wall) => {
 // horizon) from the current SOC and the latest forecast; the 16:00 publication extends the
 // horizon to the next tariff-day. Each slot executes the plan's first step against ACTUAL
 // load, so the battery follows it only as far as reality allows. Exported for tests.
-export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
+export function runReplay(usage, load, imp, exp, cfg, params, pv = null, axle = null) {
   const T = load.length;
   const mode = params.cycle || 'contiguous';
   const allowExport = !!params.allowExport;
@@ -229,6 +229,13 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
     const expS = known
       ? exp.slice(i, h).map((v, k) => { let t = i + k; while (t >= pubEnd) t -= 48; return exp[t]; })
       : exp.slice(i, h);
+    // Axle event uplift: only on published slots (an event is never projected forward from
+    // yesterday's prices), and a short-notice one only once its notice has been given.
+    if (axle) {
+      for (let t = i; t < h; t++) {
+        if (axle.upP[t] > 0 && t < pubEnd && i >= axle.visFrom[t]) expS[t - i] += axle.upP[t];
+      }
+    }
     const pvF = fcPv ? fcPv.forecast(i, h, calKey) : null;
     plan = solveHorizon(soc, imp.slice(i, h), expS, loadF, cfg, mode, allowExport, pvF);
     planStart = i; horizon = h; replans++;
@@ -361,9 +368,15 @@ export function runReplay(usage, load, imp, exp, cfg, params, pv = null) {
 
 // params.boundary is ignored: the replay's horizons come from the tariff day and the
 // 16:00 publication, not from a user-chosen window boundary.
-export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
+export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null, axle = null }) {
   const cfg = makeCfg(params);
-  const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params, pv);
+  // Axle pays through the battery's inverter, so a no-battery run earns nothing from it and
+  // the PV-only baseline below stays on the plain export rate.
+  const ax = axle && params.useBattery !== false ? axle : null;
+  const expB = ax ? exp.map((v, i) => v + ax.upP[i]) : exp;
+  const { slots: exec, replans, warmupDays } = runReplay(usage, load, imp, exp, cfg, params, pv, ax);
+  const axMonths = new Map();                          // 'YYYY-MM' -> { earnedP, slots }
+  let axKwh = 0;
 
   // presentation is always calendar days: costs are per-slot, so any grouping sums exactly
   const slots = new Array(load.length);
@@ -376,7 +389,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     if (soc < -1e-6 || soc > cfg.cap + 1e-6) violations++;
     const gImp = def + cin - dl;                       // deficit after PV, plus grid charge, less discharge
     const gExp = dx + pvx;
-    const slotP = gImp * imp[i] - gExp * exp[i];
+    const slotP = gImp * imp[i] - gExp * expB[i];
     // no-battery baseline: PV serves the house, surplus exports under the cap (DC clipped by the inverter)
     const pvOnly = pv ? Math.min(load[i], pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut)) : 0;
     const pvOnlyExp = pv && allowX ? Math.min(pv.ac[i] + Math.min(pv.dc[i], cfg.slotOut) - pvOnly, cfg.exportCap) : 0;
@@ -384,6 +397,13 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     maxExportSlot = Math.max(maxExportSlot, gExp);
     const date = usage.wall[i].slice(0, 10);
     const hhmm = usage.wall[i].slice(11);
+    if (ax) {
+      const ym = date.slice(0, 7);
+      let m = axMonths.get(ym);
+      if (!m) { m = { earnedP: 0, slots: 0 }; axMonths.set(ym, m); }
+      m.slots++;
+      if (ax.upP[i] > 0) { m.earnedP += gExp * ax.upP[i]; axKwh += gExp; }
+    }
     let d = byDate.get(date);
     if (!d) {
       d = { day: date, kwh: 0, baseP: 0, costP: 0, kwhOut: 0, pv: 0, w0: null, w1: null };
@@ -400,7 +420,7 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     }
     slots[i] = {
       day: date, wall: usage.wall[i], hhmm,
-      imp: imp[i], exp: exp[i], load: load[i], chg: cin,
+      imp: imp[i], exp: expB[i], axle: !!ax && ax.upP[i] > 0, load: load[i], chg: cin,
       disLoad: dl, disExp: dx,
       pvGen: pv ? pv.ac[i] + pv.dc[i] : 0, pvToHouse: pvHouse,
       pvToBattery: pvc, pvExport: pvx, pvSpill: spill,
@@ -420,7 +440,16 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     used: d.kwhOut > 1e-9,
   }));
 
-  const energy = perDay.reduce((a, d) => a + d.costP, 0) / 100;
+  // Axle's monthly minimum: a covered month that earned less than the floor is topped up to
+  // it, pro-rated when the run holds only part of the month. A month-level payment, so it
+  // comes off the run's energy cost here and never appears in a slot or a day.
+  let axEarnedP = 0, axTopUpP = 0;
+  for (const [ym, m] of axMonths) {
+    const days = new Date(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).getUTCDate();
+    m.topUpP = ax.covered(ym) ? Math.max(0, ax.floorP * Math.min(1, m.slots / (days * 48)) - m.earnedP) : 0;
+    axEarnedP += m.earnedP; axTopUpP += m.topUpP;
+  }
+  const energy = (perDay.reduce((a, d) => a + d.costP, 0) - axTopUpP) / 100;
   // pack-kWh charged: PV cycles the pack exactly as grid import does, so both wear it
   const stored = exec.reduce((a, s) => a + s.cin + s.pvc, 0) * cfg.eff;
   const wear = stored * cfg.wearP / 100;                             // £, not in `energy`
@@ -446,6 +475,8 @@ export function runSim({ usage, load, imp, exp, scTotalP, params, pv = null }) {
     pvExport: slots.reduce((a, s) => a + s.pvExport, 0),
     pvSpill: slots.reduce((a, s) => a + s.pvSpill, 0),
     warmupDays, replans,
+    axle: ax ? { events: ax.events, kwh: axKwh, earnedP: axEarnedP, topUpP: axTopUpP,
+                 from: ax.from, to: ax.to, byMonth: axMonths } : null,
     perDay, slots,
   };
 }

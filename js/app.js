@@ -3,6 +3,7 @@ import { REGIONS, IMPORT_TARIFFS, EXPORT_TARIFFS, buildPrices, clearCache,
 import { parseUsage, parseGas, heatPumpFromGas, heatPumpSynthetic, runSim, currentTariffTotal, paybackYears, roiPct, lifetimeReturn, gasBillPounds, gasImpliedRates, sweepCapacities, sweepInverters, predictedExportKw, slotAtX } from './data.js';
 import { FlowDiagram } from './flow.js';
 import { lookupPostcode, buildPv } from './solar.js';
+import { axleSeries } from './axle.js';
 
 const $ = (id) => document.getElementById(id);
 const gbp = (n) => (n < 0 ? '−' : '') + '£' + Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -64,6 +65,9 @@ function syncPredictExport() {
   box.value = kw === null ? '' : kw.toFixed(2);
 }
 $('predictExport').onchange = syncPredictExport;
+
+function syncAxle() { $('axleWrap').classList.toggle('hide', !$('axle').checked); }
+$('axle').onchange = syncAxle;
 $('sourceOhms').oninput = syncPredictExport;
 $('sourceVolts').oninput = syncPredictExport;
 
@@ -358,7 +362,7 @@ async function restoreControls() {
     renderArrays();
   }
   // re-sync the dependent UI without the import handler, which would reset the export
-  syncTariffUi(); syncPredictExport(); syncControls();
+  syncTariffUi(); syncPredictExport(); syncAxle(); syncControls();
   $('curSource').dispatchEvent(new Event('change'));
   $('hpMode').dispatchEvent(new Event('change'));
 }
@@ -403,7 +407,10 @@ function params() {
     installCost: num('installCost'),
     escPct: num('escPct') || 0,
     lifeYears: num('lifeYears'),
-    allowExport: $('exportTariff').value !== 'none',
+    axle: $('axle').checked,
+    axleShort: $('axleShort').checked,
+    // an Axle event exports whatever the export tariff is, so it switches export on
+    allowExport: $('exportTariff').value !== 'none' || $('axle').checked,
     curSource: $('curSource').value,
     curUnitRate: num('curUnitRate'),
     curScPerDay: num('curScPerDay'),
@@ -417,6 +424,8 @@ function params() {
     solarCost: activeArrays().reduce((a, x) => a + (x.cost || 0), 0),
   };
 }
+
+const axleFor = (p) => (p.axle ? axleSeries(state.usage, p.region, { shortNotice: p.axleShort }) : null);
 
 // null override => use the CSV's own cost columns
 function curOverride(p) {
@@ -454,13 +463,14 @@ $('run').onclick = async () => {
     status('<span class="spinner"></span> optimising 365 days…');
     await new Promise((r) => setTimeout(r, 0));
 
-    const withBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp,
+    const axle = axleFor(p);
+    const withBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp, axle,
                              scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: true } });
     const noBat = runSim({ usage: state.usage, load, imp: prices.imp, exp: prices.exp,
                            scTotalP: prices.scTotalP, pv, params: { ...p, useBattery: false } });
     const cur = currentTariffTotal(state.usage, add, curOverride(p));
 
-    state.run = { p, prices, withBat, noBat, cur, hpInfo: info };
+    state.run = { p, prices, withBat, noBat, cur, hpInfo: info, axle };
     render();
     status('done');
   } catch (e) {
@@ -481,6 +491,7 @@ $('compare').onclick = async () => {
     const { load, add } = buildLoad(p);
     const pv = await ensurePv();
     const cur = currentTariffTotal(state.usage, add, curOverride(p));
+    const axle = axleFor(p);
     const combos = [];
     // every permitted pairing that has a published product (custom flat rates are UI-only)
     for (const [ik, iv] of Object.entries(IMPORT_TARIFFS)) {
@@ -495,11 +506,11 @@ $('compare').onclick = async () => {
       });
       await new Promise((r) => setTimeout(r, 0));
       const wb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
-                          scTotalP: pr.scTotalP, pv,
-                          params: { ...p, allowExport: c.ek !== 'none', useBattery: true } });
+                          scTotalP: pr.scTotalP, pv, axle,
+                          params: { ...p, allowExport: c.ek !== 'none' || p.axle, useBattery: true } });
       const nb = runSim({ usage: state.usage, load, imp: pr.imp, exp: pr.exp,
                           scTotalP: pr.scTotalP, pv,
-                          params: { ...p, allowExport: c.ek !== 'none', useBattery: false } });
+                          params: { ...p, allowExport: c.ek !== 'none' || p.axle, useBattery: false } });
       rows.push({ ...c, wb, nb, note: IMPORT_TARIFFS[c.ik].note });
     }
     renderCompare(rows, cur, systemCost(p), p);
@@ -514,11 +525,11 @@ $('compare').onclick = async () => {
 
 $('runSweeps').onclick = async () => {
   if (!state.run) return;
-  const { p, prices, withBat, cur } = state.run;
+  const { p, prices, withBat, cur, axle } = state.run;
   $('runSweeps').disabled = true;
   try {
     const { load } = buildLoad(p);
-    const base = { usage: state.usage, load, imp: prices.imp, exp: prices.exp,
+    const base = { usage: state.usage, load, imp: prices.imp, exp: prices.exp, axle,
                    scTotalP: prices.scTotalP, pv: state.solar.pv?.series ?? null };
     const annual = 365 / withBat.nDays;
     const one = async (key, v, unit) => {
@@ -596,6 +607,7 @@ function render() {
     `${prices.meta.importName} · ${prices.meta.exportName} · region ${p.region}`;
 
   const save = cur.total - withBat.total;
+  const ax = withBat.axle;
   const cost = systemCost(p);
   // `cost` includes the array, so the battery-only figures (which measure
   // savedVsNoBattery, the marginal saving over a PV-netted baseline) divide by the
@@ -654,6 +666,10 @@ function render() {
     ${withBat.wearP > 0 ? card('Battery wear', `${gbp(withBat.wear * annual)}/yr`,
       `${withBat.wearP.toFixed(2)} p per kWh stored · ${(withBat.stored / withBat.usableCap * annual).toFixed(0)} cycles/yr ` +
       `→ ${(p.cycleLife / (withBat.stored / withBat.usableCap * annual)).toFixed(0)} yrs to ${p.cycleLife.toLocaleString('en-GB')} cycles`) : ''}
+    ${ax ? card('Axle events', gbp((ax.earnedP + ax.topUpP) / 100),
+      `${ax.events} event${ax.events === 1 ? '' : 's'} · ${ax.kwh.toFixed(1)} kWh exported at £1` +
+      (ax.topUpP > 0 ? ` · ${gbp(ax.topUpP / 100)} of it the £10/month minimum` : '') +
+      '<br>already inside With battery') : ''}
     ${invest > 0 ? card('Payback', fmtYears(pbCur) + fmtRoi(roiCur), [
       (costParts.length ? costParts.join(' + ') : gbp(invest)) +
         ` ÷ ${gbp(pbSave)}/yr vs your current setup`,
@@ -669,6 +685,12 @@ function render() {
   `;
 
   const w = [...prices.warnings];
+  if (ax) {
+    w.push(ax.from === null
+      ? `Axle: no events are recorded for region ${p.region}, so none were applied.`
+      : `Axle: events for region ${p.region} are recorded from ${ax.from} to ${ax.to} ` +
+        '(community-sourced, not verified by Axle). Months outside that have no events and no monthly minimum.');
+  }
   if (withBat.socViolations) w.push(`${withBat.socViolations} state-of-charge bound violations — please report this.`);
   if (p.hpMode === 'gas' && hpInfo?.unmatchedKwh > 0.5) {
     w.push(`${hpInfo.unmatchedKwh.toFixed(0)} kWh of gas fell outside the electricity date range and was ignored.`);
@@ -754,10 +776,16 @@ function renderCompare(rows, cur, cost = 0, p = {}) {
 
 function renderMonths() {
   const { withBat, noBat } = state.run;
+  const ax = withBat.axle;
   const by = new Map();
   withBat.perDay.forEach((d, i) => {
     const k = d.day.slice(0, 7);
-    if (!by.has(k)) by.set(k, { kwh: 0, base: 0, cost: 0, out: 0, pv: 0 });
+    if (!by.has(k)) {
+      // the monthly minimum is paid per month, not per day, so it joins the cost here
+      const a = ax?.byMonth.get(k);
+      by.set(k, { kwh: 0, base: 0, cost: a ? -a.topUpP / 100 : 0, out: 0, pv: 0,
+                  axle: a ? (a.earnedP + a.topUpP) / 100 : 0 });
+    }
     const o = by.get(k);
     o.kwh += d.kwh; o.base += d.baseP / 100; o.cost += d.costP / 100; o.out += d.kwhOut;
     o.pv += d.pv || 0;
@@ -766,11 +794,11 @@ function renderMonths() {
   $('monthTable').innerHTML =
     `<thead><tr><th>Month</th><th>kWh</th>${solar ? '<th>Solar kWh</th>' : ''}
       <th>No battery</th><th>With battery</th>
-      <th>Saved</th><th>kWh cycled</th></tr></thead><tbody>` +
+      <th>Saved</th>${ax ? '<th>of it Axle</th>' : ''}<th>kWh cycled</th></tr></thead><tbody>` +
     [...by.entries()].map(([k, o]) => `<tr><td>${k}</td>
       <td>${o.kwh.toFixed(0)}</td>${solar ? `<td>${o.pv.toFixed(0)}</td>` : ''}
       <td>${gbp(o.base)}</td><td>${gbp(o.cost)}</td>
-      <td class="pos">${gbp(o.base - o.cost)}</td><td>${o.out.toFixed(0)}</td></tr>`).join('') +
+      <td class="pos">${gbp(o.base - o.cost)}</td>${ax ? `<td>${gbp(o.axle)}</td>` : ''}<td>${o.out.toFixed(0)}</td></tr>`).join('') +
     '</tbody>';
 }
 
@@ -847,7 +875,7 @@ function showSlot(i) {
   state.flow.update(s, state.run.p.capacity);
   $('slotTable').innerHTML = `
     ${trow('Import price', `${s.imp.toFixed(2)} p/kWh`)}
-    ${trow('Export price', `${s.exp.toFixed(2)} p/kWh`)}
+    ${trow('Export price', `${s.exp.toFixed(2)} p/kWh${s.axle ? ' · incl. £1 Axle event' : ''}`)}
     ${trow('House load', `${s.load.toFixed(3)} kWh (${(s.load * 2).toFixed(2)} kW)`)}
     ${s.pvGen > 1e-9 ? trow('Solar', `${s.pvGen.toFixed(3)} kWh · ` +
       `${Math.max(0, s.pvToHouse).toFixed(2)} house / ${s.pvToBattery.toFixed(2)} battery / ` +
